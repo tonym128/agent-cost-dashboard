@@ -309,7 +309,9 @@ func consumePi(b *sessionBuilder, rec record, ctx *parseCtx) error {
 // Usage sits under message.usage. Anthropic's input_tokens excludes the cache
 // buckets, so the four components are summed rather than subtracted — which is
 // the opposite convention to Gemini's, and the reason each parser is explicit
-// about it.
+// about it. Anthropic also reports extended thinking as part of output_tokens
+// rather than separately, so the thinking block is split back out here for the
+// cost breakdown while the whole generated count is still billed.
 func NewClaudeParser() Parser {
 	return &jsonlParser{
 		agent: model.AgentClaude,
@@ -366,13 +368,20 @@ func consumeClaude(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	if len(usage) == 0 {
 		return nil
 	}
+	content := asSlice(msg["content"])
 
 	input := num(usage, "input_tokens")
-	output := num(usage, "output_tokens")
+	generated := num(usage, "output_tokens")
 	cacheRead := num(usage, "cache_read_input_tokens")
 	// cache_creation_input_tokens is the aggregate; the per-window breakdown
 	// underneath it must not also be added, or cache writes double count.
 	cacheWrite := num(usage, "cache_creation_input_tokens")
+
+	// Anthropic bills extended thinking at the output rate and folds it into
+	// output_tokens rather than reporting it separately, so without this split
+	// a thinking-heavy session shows one large output line item and the actual
+	// driver of the spend is invisible.
+	visible, reasoning := visibleOutput(generated, claudeReasoning(usage, content))
 
 	llmSeconds := 0.0
 	if !ts.IsZero() && !ctx.lastRequest.IsZero() {
@@ -382,7 +391,7 @@ func consumeClaude(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	}
 	ctx.lastRequest = time.Time{}
 
-	for _, item := range asSlice(msg["content"]) {
+	for _, item := range content {
 		it := asMap(item)
 		if str(it, "type") == "tool_use" {
 			b.addTool(model.ToolCall{Tool: str(it, "name"), Time: ts})
@@ -393,17 +402,73 @@ func consumeClaude(b *sessionBuilder, rec record, ctx *parseCtx) error {
 		Model:            modelName,
 		Time:             ts,
 		InputTokens:      int(input),
-		OutputTokens:     int(output),
+		OutputTokens:     int(visible),
 		CacheReadTokens:  int(cacheRead),
 		CacheWriteTokens: int(cacheWrite),
+		ReasoningTokens:  int(reasoning),
 		LLMSeconds:       llmSeconds,
 	}
 	if id := str(d, "uuid"); id != "" {
 		c.CallKey = "msg:" + id
 	}
-	price(ctx.pricer, &c)
+	// The whole generated count is billed at the output rate, thinking included,
+	// so the cost is unchanged by the split above.
+	priceGenerated(ctx.pricer, &c, int(generated))
 	b.addCall(c)
 	return nil
+}
+
+// charsPerToken is the usual English-text ratio, used only to size a thinking
+// block that arrived as text. It is an estimate and is labelled as one wherever
+// it is reported.
+const charsPerToken = 4
+
+// claudeReasoning returns how many of a Claude Code call's generated tokens were
+// extended thinking.
+//
+// Anthropic's usage block has no reasoning field — thinking is billed as output
+// and appears only as a `thinking` content block — so the count has to come from
+// somewhere else, in this order of preference:
+//
+//   - an explicit usage field, if a version ever adds one (checked under every
+//     spelling seen across providers rather than assuming one);
+//   - otherwise the size of the thinking text, divided by a standard
+//     characters-per-token ratio.
+//
+// Both paths are best-effort. A record with neither yields 0, which shows as
+// "no reasoning" rather than as a fabricated number, and visibleOutput clamps the
+// result to the generated count that contains it.
+func claudeReasoning(usage map[string]any, content []any) int64 {
+	for _, key := range []string{
+		"reasoning_tokens", "thinking_tokens", "output_reasoning_tokens",
+	} {
+		if v := num(usage, key); v > 0 {
+			return v
+		}
+	}
+	// Some builds nest the split one level down.
+	for _, key := range []string{"output_tokens_details", "output_tokens_detail", "completion_tokens_details"} {
+		details := asMap(usage[key])
+		for _, sub := range []string{"reasoning_tokens", "thinking_tokens"} {
+			if v := num(details, sub); v > 0 {
+				return v
+			}
+		}
+	}
+
+	var chars int64
+	for _, item := range content {
+		it := asMap(item)
+		switch str(it, "type") {
+		case "thinking", "reasoning":
+			chars += int64(len(str(it, "thinking"))) + int64(len(str(it, "reasoning")))
+		case "redacted_thinking":
+			// The body is withheld by design, so only its shape is known. It is
+			// still thinking, so it counts, but the count is a floor.
+			chars += int64(len(str(it, "data")))
+		}
+	}
+	return chars / charsPerToken
 }
 
 // ---------------------------------------------------------------- Codex CLI

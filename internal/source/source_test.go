@@ -1,8 +1,12 @@
 package source
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/tonym128/agent-cost-dashboard/internal/model"
@@ -100,27 +104,113 @@ func TestPricerCachesResolution(t *testing.T) {
 	}
 }
 
-func TestFallbackTableEntriesAreReachable(t *testing.T) {
-	// A fallback pattern the live catalogue always wins for is a dead edit:
-	// changing it changes nothing. The count is asserted rather than the exact
-	// set, because the catalogue changes when pricing is refreshed.
+// liveModelIDs returns every model id in the committed price dump, which is the
+// set of models the dashboard will ever be asked about.
+func liveModelIDs(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile("../../models.json")
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	var doc openRouterDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse models.json: %v", err)
+	}
+	ids := make([]string, 0, len(doc.Data))
+	for _, m := range doc.Data {
+		if m.ID != "" {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		t.Fatal("models.json lists no models")
+	}
+	return ids
+}
+
+// TestFallbackTableNeverReportsAConfidentZero is the property the embedded table
+// actually exists to provide.
+//
+// It used to be tested as "most fallback patterns must not be shadowed by the
+// live catalogue", which measured reachability in a world where models.json
+// always loads — precisely the world the table does not exist for. Shadowing is
+// the healthy state: it means the dump and the fallback agree. Those entries are
+// the entire reason a `go install`ed binary can still price a Claude session.
+//
+// So the question asked here is what happens when the dump is *absent*: every
+// model in the catalogue must either get a real rate or be explicitly reported
+// unpriced. The one failure worth catching is a call that claims to be priced
+// while costing nothing, because that is a confident wrong number and it defeats
+// the unpriced safety net entirely.
+func TestFallbackTableNeverReportsAConfidentZero(t *testing.T) {
+	fallback, err := NewFallbackPricer()
+	if err != nil {
+		t.Fatalf("NewFallbackPricer: %v", err)
+	}
+	// The dump itself, only to tell a genuinely free model from a mis-priced one.
+	live := testPricer(t)
+	ids := liveModelIDs(t)
+
+	covered, unpriced := 0, 0
+	var silentZero []string
+	for _, id := range ids {
+		cost, priced := fallback.Cost(id, 1_000_000, 1_000_000, 0, 0)
+		if !priced {
+			unpriced++
+			continue
+		}
+		covered++
+		if cost > 0 {
+			continue
+		}
+		// Zero is only honest when the dump agrees the model is free; otherwise
+		// the fallback resolved it to nothing and would report $0.00 as priced.
+		if rates, ok := live.Resolve(id); ok && rates.Input+rates.Output > 0 {
+			silentZero = append(silentZero, id)
+		}
+	}
+
+	t.Logf("with no price dump, the embedded fallback prices %d of %d models "+
+		"and reports %d as unpriced (never as $0.00)", covered, len(ids), unpriced)
+	if len(silentZero) > 0 {
+		sort.Strings(silentZero)
+		t.Errorf("%d of %d models resolve to a confident $0.00 with no price dump: %s",
+			len(silentZero), len(ids), strings.Join(silentZero, ", "))
+	}
+	if covered == 0 {
+		t.Fatal("the embedded fallback table prices nothing at all")
+	}
+	// The models that matter most, by spend, must survive losing the dump. These
+	// were the entries the old test wanted to delete.
+	for _, id := range []string{"claude-opus-4-1", "claude-opus-4-8", "gemini-2.5-pro"} {
+		if _, ok := fallback.Resolve(id); !ok {
+			t.Errorf("%s is unpriced without the dump", id)
+		}
+	}
+}
+
+// TestFallbackShadowingIsInformationalOnly reports, without asserting on it, how
+// much of the fallback table the live catalogue would shadow.
+//
+// This is a diagnostic for whoever refreshes prices, not a health check. A high
+// count means the two sources agree; a low count means the dump has drifted and
+// the table is doing real work. Neither is a reason to delete a row: every
+// shadowed entry is the price that model gets when models.json is missing.
+func TestFallbackShadowingIsInformationalOnly(t *testing.T) {
 	p := testPricer(t)
 	reach := p.FallbackReachability()
 	if len(reach) == 0 {
 		t.Fatal("fallback table is empty")
 	}
-	dead := 0
-	for pattern, ok := range reach {
-		if !ok {
-			dead++
-			t.Logf("shadowed by live catalogue: %s", pattern)
+	shadowed := 0
+	for _, reachable := range reach {
+		if !reachable {
+			shadowed++
 		}
 	}
-	// A majority being dead edits would mean the fallback table is mostly
-	// documentation.
-	if dead > len(reach)/2 {
-		t.Errorf("%d of %d fallback entries are unreachable", dead, len(reach))
-	}
+	t.Logf("informational: %d of %d fallback patterns are shadowed by the live "+
+		"catalogue — those rows are the no-dump safety net, not dead entries",
+		shadowed, len(reach))
 }
 
 // ---------------------------------------------------------------- protobuf
@@ -370,6 +460,102 @@ func TestHeadFingerprintRejectsAChangedHead(t *testing.T) {
 	os.WriteFile(path, []byte(`{"n":9}`+"\n"+`{"n":2}`+"\n"), 0o600)
 	if HeadMatches(path, hash, length) {
 		t.Error("a rewritten head still matched")
+	}
+}
+
+// ---------------------------------------------------------------- Claude
+
+// claudeAssistant writes a one-record Claude Code transcript — one JSON object
+// on one line, as the real log has it — and returns the single call it yields.
+func claudeCall(t *testing.T, msg string) model.Call {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	line := `{"type":"assistant","sessionId":"s1","cwd":"/home/u/p","uuid":"u1",` +
+		`"timestamp":"2026-05-01T10:00:00Z","message":` + msg + "}\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pricer, err := NewPricer("../../models.json", "manual_pricing.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, _, err := NewClaudeParser().Parse(path, model.ScanState{}, pricer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sw.Calls) != 1 {
+		t.Fatalf("parsed %d calls, want 1", len(sw.Calls))
+	}
+	return sw.Calls[0]
+}
+
+// thinkingBody is a realistic extended-thinking block: a few hundred characters
+// of the deliberation Claude Code actually writes.
+var thinkingBody = "The user wants the failing test replaced rather than the " +
+	"fixture adjusted, because the fixture is the safety net. Check whether the " +
+	"pricer can be constructed with no dump at all before changing anything " +
+	"else, since a test that cannot build its subject proves nothing."
+
+func TestClaudeThinkingBlockIsItemisedAsReasoning(t *testing.T) {
+	// Anthropic bills thinking at the output rate and does not report it
+	// separately, so without this the tokens land invisibly inside output and a
+	// $14 session cannot be explained.
+	call := claudeCall(t, `{"model":"claude-opus-4-5",`+
+		`"usage":{"input_tokens":120,"output_tokens":400,`+
+		`"cache_read_input_tokens":8000,"cache_creation_input_tokens":2000},`+
+		`"content":[{"type":"thinking","thinking":`+strconv.Quote(thinkingBody)+`},`+
+		`{"type":"text","text":"Understood."}]}`)
+
+	if call.ReasoningTokens <= 0 {
+		t.Fatalf("ReasoningTokens = %d, want > 0 for a thinking block", call.ReasoningTokens)
+	}
+	// The split must be a partition of the generated count, never more than it.
+	if call.OutputTokens+call.ReasoningTokens != 400 {
+		t.Errorf("output %d + reasoning %d != generated 400",
+			call.OutputTokens, call.ReasoningTokens)
+	}
+	if !call.Priced {
+		t.Error("claude-opus-4-5 was not priced")
+	}
+	// Thinking is billed as output, so the cost must be the whole generated
+	// count at the output rate — not just the visible remainder.
+	rates, _ := testPricer(t).Resolve("claude-opus-4-5")
+	want := 120/1e6*rates.Input + 400/1e6*rates.Output +
+		8000/1e6*rates.CacheRead + 2000/1e6*rates.CacheWrite
+	if diff := call.CostUSD - want; diff > 0.001 || diff < -0.001 {
+		t.Errorf("cost $%.6f, want $%.6f (whole generated count billed)", call.CostUSD, want)
+	}
+}
+
+func TestClaudeWithoutThinkingHasNoReasoning(t *testing.T) {
+	// The common case, and the one that must not regress into a guess: no
+	// thinking block and no reasoning field means zero, not an estimate.
+	call := claudeCall(t, `{"model":"claude-opus-4-5",`+
+		`"usage":{"input_tokens":120,"output_tokens":400,`+
+		`"cache_read_input_tokens":8000,"cache_creation_input_tokens":2000},`+
+		`"content":[{"type":"text","text":"Done."},`+
+		`{"type":"tool_use","name":"Bash","input":{"command":"go test ./..."}}]}`)
+
+	if call.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0 for a message with no thinking block",
+			call.ReasoningTokens)
+	}
+	if call.OutputTokens != 400 {
+		t.Errorf("OutputTokens = %d, want the full 400", call.OutputTokens)
+	}
+}
+
+func TestClaudeReasoningNeverExceedsGenerated(t *testing.T) {
+	// A blob whose thinking dwarfs the reported output is a bad record; letting
+	// the larger number through would put a token count into the dashboard that
+	// is bigger than the total it is part of.
+	call := claudeCall(t, `{"model":"claude-opus-4-5",`+
+		`"usage":{"input_tokens":10,"output_tokens":20,"reasoning_tokens":9000},`+
+		`"content":[{"type":"text","text":"ok"}]}`)
+
+	if call.ReasoningTokens != 20 || call.OutputTokens != 0 {
+		t.Errorf("reasoning %d / output %d, want clamped to (20, 0)",
+			call.ReasoningTokens, call.OutputTokens)
 	}
 }
 
