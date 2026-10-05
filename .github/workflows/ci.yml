@@ -1,0 +1,182 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Superseded runs on the same branch are pointless: cancel them.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default is read-only for the whole workflow. Each job widens only what it
+# needs, so a compromised test step cannot write to the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Keep going on the other platforms when one fails; the interesting
+      # signal is "which platforms are broken", not "did any fail".
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Read the required version from go.mod so a Go bump needs no edit here.
+          go-version-file: go.mod
+          # Module cache, so a rebuild does not redownload the world.
+          cache: true
+          cache-dependency-path: go.sum
+
+      # There is deliberately no separate module cache action here:
+      # actions/setup-go has managed caching built in, and layering a second
+      # cache on top buys nothing but a second thing to invalidate.
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Check formatting
+        # gofmt -l prints the files it would rewrite. Any output at all means
+        # the tree is not formatted, and that must fail the build.
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "gofmt: clean"
+
+      - name: Test
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-${{ matrix.os }}
+          path: coverage.out
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Report coverage
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -f coverage.out ]; then
+            echo "no coverage profile was produced"
+            exit 0
+          fi
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')
+          echo "total coverage: $total"
+          echo "### Coverage on ${{ matrix.os }}: $total" >> "$GITHUB_STEP_SUMMARY"
+
+  # Coverage floor. A separate job so it is a single gate rather than three,
+  # and so the number that matters is compared in one place.
+  coverage:
+    name: coverage floor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: test
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download the coverage profiles
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: coverage-*
+          path: coverage-artifacts
+          merge-multiple: false
+
+      - name: List what arrived
+        run: ls -l coverage-artifacts
+
+      - name: Enforce the floor
+        shell: bash
+        run: |
+          # RAISE THIS as coverage improves. Never lower it.
+          # Current measured total on linux: 47.1%
+          #   cmd 0.0%, scan 52.9%, source 48.4%, store 36.0%, web 72.2%
+          # The floor sits below the current number on purpose: its job is to
+          # stop coverage falling, not to be a target in itself. Raise it in
+          # small steps (45 -> 46 -> 47) as tests are added.
+          FLOOR=45.0
+
+          # The floor is judged on the linux profile alone. The three platforms
+          # run the same tests over the same statements, so merging them would
+          # triple-count every line; comparing one canonical profile is both
+          # simpler and the actual number people quote. The macOS and Windows
+          # profiles are still uploaded as artifacts for anyone who wants them.
+          profile=coverage-artifacts/coverage-ubuntu-latest/coverage.out
+          if [ ! -f "$profile" ]; then
+            echo "::error::missing $profile"
+            ls -R coverage-artifacts
+            exit 1
+          fi
+
+          total=$(go tool cover -func="$profile" | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
+          if [ -z "$total" ]; then
+            echo "::error::could not read a total from $profile"
+            exit 1
+          fi
+          echo "total coverage: ${total}%, floor: ${FLOOR}%"
+          echo "### Coverage total (linux): ${total}% (floor ${FLOOR}%)" >> "$GITHUB_STEP_SUMMARY"
+
+          # awk for the comparison, so the shell's integer handling cannot turn
+          # 45.0 into a false failure.
+          ok=$(awk -v t="$total" -v f="$FLOOR" 'BEGIN{print (t+0 >= f+0) ? 1 : 0}')
+          if [ "$ok" != "1" ]; then
+            echo "::error::Coverage ${total}% is below the floor of ${FLOOR}%"
+            exit 1
+          fi
+
+  lint:
+    name: lint (staticcheck)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      # staticcheck is run via `go run` at @latest rather than via
+      # dominikh/staticcheck-action. That trades strict pinning for not having
+      # to track a third-party action's tags; the module is fetched through
+      # the Go module proxy, which does verify checksums.
+      #
+      # The same flags live in the Makefile's STATICCHECK_CHECKS and are
+      # documented there. Keep the two in step.
+      - name: staticcheck
+        run: make lint

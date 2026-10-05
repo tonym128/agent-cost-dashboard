@@ -1,0 +1,42 @@
+# Keep the build context small and, more importantly, keep secrets and local
+# state out of the daemon's view of this directory.
+#
+# Deliberately NOT excluded: models.json. The Dockerfile bakes it in, because
+# an image without price data reports $0.00 costs while claiming it priced
+# them. Do not add it here.
+
+# Version control and the tool's own session transcripts: not build inputs, and
+# .git in particular is large and has no business in a layer.
+.git
+.gitignore
+.github
+.opencode
+
+# Local databases. Rebuilt by a scan, machine-specific, and private.
+*.db
+*.db-wal
+*.db-shm
+
+# Compiled output and test binaries.
+dashd
+dashd.exe
+*.test
+coverage.out
+coverage.html
+dist/
+
+# Editor and OS noise.
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Docs and packaging are not needed to compile or run the binary.
+# (README.md and LICENSE are still fetched explicitly into the image.)
+README.md
+packaging/
+Makefile
+
+# Python bytecode from update_models.py.
+__pycache__/
+*.pyc
