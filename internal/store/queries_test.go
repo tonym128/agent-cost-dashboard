@@ -204,3 +204,69 @@ func TestFilterClauseKeepsItsSeparators(t *testing.T) {
 		t.Errorf("clause has %d args for %d placeholders", len(args), strings.Count(clause, "?"))
 	}
 }
+
+// TestWhereExtraPreservesBoundOrder pins the contract the leading bounds have:
+// they come first, in the order given, ahead of anything the filter adds.
+//
+// Activity() depends on this to build its argument list — it prepends the two
+// bucket divisors and then appends these, so a bound that moved behind a filter
+// clause would pair a filter value with the window's timestamp.
+func TestWhereExtraPreservesBoundOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		f       Filter
+		bounds  []string
+		wantSeq []string
+	}{
+		{"bounds only", Filter{}, []string{"ts >= ?", "ts <= ?"},
+			[]string{"ts >= ?", "ts <= ?"}},
+		{"bounds keep their order", Filter{}, []string{"a", "b", "c"}, []string{"a", "b", "c"}},
+		{"no bounds", Filter{Models: []string{"m"}}, nil, []string{"model IN (?)"}},
+		{"bounds lead the filter", Filter{Models: []string{"m"}}, []string{"w"},
+			[]string{"w", "model IN (?)"}},
+		{"bounds lead every axis", Filter{Agents: []string{"a"}, Projects: []string{"p"}},
+			[]string{"w1", "w2"}, []string{"w1", "w2", "agent IN (?)", "project IN (?)"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clause, _ := tc.f.whereExtra("", "ts", tc.bounds...)
+			if clause == "" {
+				t.Fatal("no clause produced")
+			}
+			got := strings.Split(strings.TrimPrefix(clause, " WHERE "), " AND ")
+			if len(got) != len(tc.wantSeq) {
+				t.Fatalf("clause has %d clauses %q, want %d", len(got), clause, len(tc.wantSeq))
+			}
+			for i := range got {
+				if got[i] != tc.wantSeq[i] {
+					t.Errorf("clause %d = %q, want %q (whole clause: %q)",
+						i, got[i], tc.wantSeq[i], clause)
+				}
+			}
+		})
+	}
+}
+
+// TestWhereExtraEmptyFilterProducesNoClause: no bounds and no filter must not
+// leave a bare WHERE behind, which is a syntax error rather than a no-op.
+func TestWhereExtraEmptyFilterProducesNoClause(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		f      Filter
+		bounds []string
+	}{
+		{"nothing", Filter{}, nil},
+		{"empty bounds", Filter{}, []string{}},
+		{"empty axes", Filter{Models: nil, Agents: nil, Projects: nil}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clause, args := tc.f.whereExtra("", "ts", tc.bounds...)
+			if clause != "" || args != nil {
+				t.Errorf("got %q / %v, want no clause and no args", clause, args)
+			}
+			// A ts column on its own is not a filter either.
+			if clause, _ := tc.f.where("", "ts"); clause != "" {
+				t.Errorf("where produced %q for an empty filter", clause)
+			}
+		})
+	}
+}

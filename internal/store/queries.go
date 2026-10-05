@@ -39,9 +39,7 @@ func (f Filter) whereExtra(colPrefix, tsCol string, bounds ...string) (string, [
 		return colPrefix + "." + col
 	}
 
-	for _, b := range bounds {
-		clauses = append(clauses, b)
-	}
+	clauses = append(clauses, bounds...)
 
 	if len(f.Models) > 0 {
 		clauses = append(clauses, p("model")+" IN ("+inPlaceholders(len(f.Models))+")")
