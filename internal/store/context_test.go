@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/tonym128/agent-cost-dashboard/internal/model"
 )
 
 // Context cancellation is the SIGTERM path, and nothing tested it.
@@ -112,34 +110,46 @@ func TestQueriesHonourACancelledContext(t *testing.T) {
 func TestQueryHonoursCancellationMidFlight(t *testing.T) {
 	st := seededFilterStore(t)
 
-	// A database with enough rows that the query has real work to do.
+	// A database with enough rows that the query has real work to do, written
+	// straight through SQL rather than through ReplaceSession: going through the
+	// write path would spend most of the test building the fixture.
+	//
+	// 8k rows puts a full-table rollup at roughly 12ms off-race, against a
+	// cancellation at 1ms — a twelvefold margin, so the cancel lands mid-flight on
+	// a loaded machine as well as on an idle one. A fixture small enough to finish
+	// in under a millisecond made this test flap instead of testing anything, and
+	// a much larger one costs 20s of seeding under -race.
+	const rows = 8000
 	dir := t.TempDir()
 	big, err := Open(dir + "/big.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer big.Close()
-	for i := 0; i < 4000; i++ {
-		uid := fmt.Sprintf("b%04d", i)
-		sess := model.SessionWrite{
-			Session: model.Session{UID: uid, Agent: "pi", Project: "/p"},
-			Calls: []model.Call{{
-				SessionUID: uid, CallKey: "c", Agent: "pi", Project: "/p",
-				Model: "m", Time: time.Now(), TotalTokens: 10, CostUSD: 1, Priced: true,
-			}},
+	if err := big.InTx(func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(
+			`INSERT INTO call (session_uid, call_key, agent, project, model, ts, day,
+			                   input_tokens, output_tokens, total_tokens, llm_seconds,
+			                   cost_usd, priced)
+			 VALUES (?,'c','pi','/p','m',?,'2026-01-01',10,5,15,1,1,1)`)
+		if err != nil {
+			return err
 		}
-		if err := big.ReplaceSession(sess); err != nil {
-			t.Fatal(err)
+		defer stmt.Close()
+		for i := 0; i < rows; i++ {
+			if _, err := stmt.Exec(fmt.Sprintf("b%04d", i), time.Now().Unix()); err != nil {
+				return err
+			}
 		}
-		if err := big.RecomputeSession(uid); err != nil {
-			t.Fatal(err)
-		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	// Cancel while the query is in flight, from another goroutine.
 	go func() {
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 		cancel()
 	}()
 
