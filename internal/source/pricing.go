@@ -262,6 +262,14 @@ func (p *Pricer) FallbackOnly() bool {
 	return p.LiveCatalogueSize() == 0
 }
 
+// FallbackSize reports how many patterns the fallback table holds, which is the
+// ceiling on what a dump-less run can price.
+func (p *Pricer) FallbackSize() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.manual)
+}
+
 // LiveModelKeys returns every model name known to either source, which is what
 // the filter dropdown offers.
 func (p *Pricer) LiveModelKeys() []string {

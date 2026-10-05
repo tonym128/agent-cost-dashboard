@@ -98,6 +98,7 @@ func run() error {
 		return fmt.Errorf("%w\n\nPricing is required. Fetch it with:\n  "+
 			"python3 update_models.py", err)
 	}
+	warnIfFallbackOnly(pricer, o.models, log)
 
 	sources, openCodeDB := scan.DefaultSources(o.home)
 	scanner := scan.New(scan.Config{
@@ -193,6 +194,34 @@ func run() error {
 	return nil
 }
 
+// warnIfFallbackOnly reports the one degraded-but-working state: the OpenRouter
+// price dump did not load and every price is coming from the embedded table.
+//
+// This is not fatal, and deliberately so. The fallback table exists so that a
+// binary without a dump beside it still runs, and refusing to start would turn a
+// rough number into no number. It is also the reason this is loud: with the dump
+// absent, a model the fallback knows is priced correctly, but a model it does
+// not know is *unpriced* — and a stale row is worse than a missing one, because
+// a missing one is at least visible in the unpriced count. Silence here is how a
+// `$0.00` with `priced=1` reaches the dashboard.
+func warnIfFallbackOnly(pricer *source.Pricer, modelsPath string, log *slog.Logger) {
+	if !pricer.FallbackOnly() {
+		return
+	}
+	log.Warn("OpenRouter price dump not loaded; pricing accuracy is degraded",
+		"reason", "price dump missing or unreadable",
+		"models", modelsPath,
+		"priced_from", "embedded fallback table",
+		"fallback_models", pricer.FallbackSize(),
+		"live_models", 0,
+		"effect", "models absent from the fallback table are reported unpriced; "+
+			"fallback rows may be older than the provider's current rates",
+		"fix", "run `python3 update_models.py` in the dashd checkout, or pass -models /path/to/models.json",
+	)
+}
+
+// printStats reports the totals, including how many calls could not be priced at
+// all — the number that says the rate table is missing something.
 func printStats(st *store.Store, log *slog.Logger) error {
 	ctx := context.Background()
 	totals, err := st.Totals(ctx, store.Filter{})
