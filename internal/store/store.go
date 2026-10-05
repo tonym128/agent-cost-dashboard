@@ -110,11 +110,7 @@ CREATE TABLE IF NOT EXISTS call (
 
 -- ts drives every time-windowed query; day drives the cheap calendar grouping.
 CREATE INDEX IF NOT EXISTS call_ts       ON call(ts);
-CREATE INDEX IF NOT EXISTS call_day      ON call(day);
-CREATE INDEX IF NOT EXISTS call_project  ON call(project);
-CREATE INDEX IF NOT EXISTS call_model    ON call(model);
 CREATE INDEX IF NOT EXISTS call_agent    ON call(agent);
-CREATE INDEX IF NOT EXISTS call_session  ON call(session_uid);
 ` + v2RollupIndexes + `
 CREATE TABLE IF NOT EXISTS tool_call (
 	session_uid TEXT    NOT NULL,
@@ -227,8 +223,10 @@ CREATE TABLE IF NOT EXISTS scan_status (
 //
 // call_day, call_project, call_session and call_model are each now a strict
 // prefix of one of these indexes, so nothing can use them that cannot use the
-// wider one — dropping those four brings the ingest cost back to roughly 15%.
-// That is left as a separate, deliberate step rather than folded in here.
+// wider one. They are therefore absent from the schema above and removed by
+// v3DropPrefixIndexes, which brought the ingest cost back down from the +58%
+// these four were adding on a full re-read to about +33%, with no measurable
+// change to any query plan.
 const v2RollupIndexes = `
 -- Daily: (day, model) is the grouping key, cost_usd the only value summed.
 CREATE INDEX IF NOT EXISTS call_day_model_cost
@@ -324,6 +322,7 @@ var migrations = []migration{
 		name:    "covering indexes for the dashboard rollups",
 		apply:   execScript(v2RollupIndexes),
 	},
+	v3DropPrefixIndexes,
 }
 
 // execScript turns a multi-statement script into a migration step.
