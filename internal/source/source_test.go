@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -876,4 +877,171 @@ func TestGeminiFallsBackToTheProjectDirectoryName(t *testing.T) {
 	if sess.Project != "no-history-here" {
 		t.Errorf("project = %q, want the directory name", sess.Project)
 	}
+}
+
+// geminiFixture builds a Gemini session log under a fake home directory and
+// returns the log's path and the project root its history entry names.
+func geminiFixture(t *testing.T, home, project, wantRoot string) string {
+	t.Helper()
+	if wantRoot != "" {
+		histDir := filepath.Join(home, ".gemini", "history", project)
+		if err := os.MkdirAll(histDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(histDir, ".project_root"),
+			[]byte(wantRoot+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logPath := filepath.Join(home, ".gemini", "tmp", project, "chats", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"type":"gemini","model":"m","tokens":{"input":1,"output":1}}` + "\n"
+	if err := os.WriteFile(logPath, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return logPath
+}
+
+// TestGeminiProjectDoesNotDependOnTheHomeEnvironmentVariable is the Windows
+// defect, made checkable.
+//
+// geminiProjectForPath builds the history path from os.Getenv("HOME"). HOME is a
+// Unix convention: on Windows it is normally unset, so the join produces a
+// CWD-relative ".gemini\history\..." that no real installation has, the lookup
+// fails, and every Gemini session files itself under its directory name rather
+// than its working directory. The two tests above manufacture HOME with
+// t.Setenv, which is exactly what hides the problem — and CI runs
+// windows-latest, so this is a real gate rather than a theoretical one.
+//
+// The fix is in internal/source/jsonl_agents.go, which this branch does not own:
+// swap os.Getenv("HOME") for os.UserHomeDir() and handle the error, as
+// internal/web/sources.go:179 and cmd/dashd/cli.go:50 already do. The expectation
+// below is stated for the fixed behaviour, so this test goes green when that
+// change lands; until then it documents what the current code does on each
+// platform.
+//
+// The branch is on runtime.GOOS rather than a skip: there is nothing to skip,
+// only a different correct answer per platform, and a skipped test here would
+// report a pass for a Windows-only defect.
+func TestGeminiProjectDoesNotDependOnTheHomeEnvironmentVariable(t *testing.T) {
+	home := t.TempDir()
+	// HOME deliberately unset, and USERPROFILE pointed at the fixture home: this
+	// is the shape of a Windows environment, where USERPROFILE is how a home
+	// directory is found. Setting both to the same value would make the test pass
+	// for the wrong reason, so only the one the platform actually uses is set.
+	t.Setenv("HOME", "")
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	} else {
+		// On Unix the user's home is HOME by definition, and Go's own
+		// os.UserHomeDir reads it, so leaving it empty makes UserHomeDir fail the
+		// way an unset HOME is supposed to.
+		t.Setenv("USERPROFILE", "")
+	}
+
+	const wantRoot = "/home/testuser/example"
+	logPath := geminiFixture(t, home, "myproject", wantRoot)
+
+	pricer, err := NewPricer("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, _, err := NewGeminiParser().Parse(logPath, model.ScanState{}, pricer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	homeDir, errHome := os.UserHomeDir()
+	resolvable := errHome == nil && homeDir != ""
+	if !resolvable {
+		// No home directory is resolvable on this platform, by construction. The
+		// project name is then the best available label, and grouping sessions
+		// under "" would be worse.
+		if sess.Project != "myproject" {
+			t.Errorf("project = %q with no resolvable home directory, want the "+
+				"directory name rather than an empty project", sess.Project)
+		}
+		t.Logf("no home directory is resolvable here (os.UserHomeDir: %v), so the "+
+			"directory name is the correct fallback", errHome)
+		return
+	}
+	if sess.Project != wantRoot {
+		t.Errorf("project = %q, want %q recovered from the history directory: the "+
+			"home directory is resolvable as %q via os.UserHomeDir, so the lookup "+
+			"must use that rather than the HOME environment variable, which is unset "+
+			"here and on every Windows machine", sess.Project, wantRoot, homeDir)
+	}
+}
+
+// TestGeminiProjectFollowsGoResolvedHomeDirectory is the Windows defect stated as
+// a gate that runs everywhere.
+//
+// geminiProjectForPath builds the history path from os.Getenv("HOME"). HOME is a
+// Unix convention: on Windows it is normally unset, so the join produces a
+// CWD-relative ".gemini\history\..." that no real installation has, the lookup
+// fails, and every Gemini session files itself under its directory name rather
+// than its working directory. The two tests above this one manufacture HOME with
+// t.Setenv, which is precisely what hides the problem.
+//
+// Here the home directory is set the way the *platform* defines it — HOME on
+// Unix, USERPROFILE on Windows, which is what os.UserHomeDir reads — and the
+// other variable is pointed at an empty decoy so that code still reading $HOME
+// finds nothing there. On Linux both name the same fixture and the test passes
+// today; on Windows the current code reads the decoy and fails.
+//
+// The fix is in internal/source/jsonl_agents.go, which this branch does not own:
+// replace os.Getenv("HOME") with os.UserHomeDir() and handle the error, as
+// internal/web/sources.go:179 and cmd/dashd/cli.go:50 already do.
+func TestGeminiProjectFollowsGoResolvedHomeDirectory(t *testing.T) {
+	home := t.TempDir()
+	decoy := t.TempDir()
+
+	const wantRoot = "/home/testuser/example"
+	logPath := geminiFixture(t, home, "myproject", wantRoot)
+
+	// The decoy holds no .gemini at all, so a lookup rooted there finds nothing.
+	if entries, err := os.ReadDir(filepath.Join(decoy, ".gemini")); err == nil && len(entries) > 0 {
+		t.Fatal("the decoy home contains a .gemini directory; the test would pass " +
+			"for the wrong reason")
+	}
+
+	// Both variables are set, to different directories. Only the one this
+	// platform defines names the fixture.
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("HOMEDRIVE", "")
+		t.Setenv("HOMEPATH", home)
+		t.Setenv("HOME", decoy)
+	default:
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", decoy)
+	}
+
+	pricer, err := NewPricer("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, _, err := NewGeminiParser().Parse(logPath, model.ScanState{}, pricer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Project != wantRoot {
+		t.Errorf("project = %q, want %q recovered from the history directory under "+
+			"the home directory this platform defines (%s = %s). It fell back to the "+
+			"directory name, which means the lookup rooted itself somewhere else — on "+
+			"Windows that is $HOME, which does not exist there.",
+			sess.Project, wantRoot, goHomeVariable(), home)
+	}
+}
+
+// goHomeVariable names the environment variable this platform uses for a home
+// directory, for the failure message above.
+func goHomeVariable() string {
+	if runtime.GOOS == "windows" {
+		return "USERPROFILE"
+	}
+	return "HOME"
 }
