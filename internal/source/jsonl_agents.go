@@ -29,7 +29,7 @@ type jsonlParser struct {
 	// resumeBaseline supplies the cumulative figure a parser differences against
 	// when an incremental read starts mid-file, read from the log rather than
 	// carried in the cursor. Only a parser whose records are running totals needs
-	// one; see codexPriorTotals.
+	// one; see lastCodexTotals.
 	resumeBaseline func(path string, from int64) map[string]any
 }
 
@@ -657,14 +657,12 @@ func consumeCodex(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	// read no cache, with the real 200 input tokens clamped away.
 	//
 	// A decrease means the counter was reset rather than that a call was
-	// refunded. The increment is unknown, not negative, so this event
-	// contributes nothing: reporting the new total in full would double count
-	// everything before the reset, and reporting a negative figure would be
-	// worse than reporting none.
-	// reset records that the running total went backwards. The increment across
-	// such an event is not knowable from this log at all, which is a different
-	// thing from a call that used nothing: the call happened, so it is kept and
-	// stored unpriced rather than dropped or billed at zero.
+	// refunded, so the increment is unknown — not negative, and not zero either.
+	// Reporting the new total in full would double count everything before the
+	// reset, and reporting a negative figure would be worse than reporting none.
+	// So reset records that this happened, and the call is stored unpriced: it
+	// demonstrably occurred, and its size is not knowable from this log. That is
+	// a different thing from a call that used nothing, which is not a call.
 	reset := false
 	delta := func(key string) int64 {
 		if _, present := last[key]; present {
