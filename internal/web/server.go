@@ -38,6 +38,12 @@ type Server struct {
 	Generated func() time.Time
 	// ScanInfo reports scanner state for the status line. Optional.
 	ScanInfo func() (lastRun time.Time, running bool)
+	// HealthCacheTTL is how long /healthz reuses its aggregate. Defaults to
+	// healthCacheTTL; zero queries the store on every request, which is what a
+	// test wants and what a network-exposed instance does not.
+	HealthCacheTTL time.Duration
+
+	health healthCache
 }
 
 // New builds a Server.
@@ -49,7 +55,8 @@ func New(st *store.Store, log *slog.Logger) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{store: st, log: log, tmpl: tmpl, Generated: time.Now}, nil
+	return &Server{store: st, log: log, tmpl: tmpl, Generated: time.Now,
+		HealthCacheTTL: healthCacheTTL}, nil
 }
 
 // Handler returns the HTTP handler for the dashboard.
@@ -99,13 +106,23 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+// handleHealth answers the unauthenticated liveness probe.
+//
+// Everything here is either a count or a timestamp. That is not incidental: the
+// endpoint is open on purpose so a container healthcheck does not need the auth
+// token in its command, and the reason that is defensible is that there is
+// nothing here to disclose. No paths, no models, no titles.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	totals, err := s.store.Totals(ctx, store.Filter{})
-	status := map[string]any{"ok": err == nil}
-	if err == nil {
-		status["calls"] = totals.Calls
-		status["sessions"] = totals.Sessions
+	status := map[string]any{"ok": true}
+	// The aggregate is cached, because this endpoint is unauthenticated and
+	// would otherwise let anyone who can reach the port run a full scan of the
+	// call table as often as they like. See healthCacheTTL.
+	if counts, ok := s.healthCountsFor(ctx); ok {
+		status["calls"] = counts.calls
+		status["sessions"] = counts.sessions
+	} else {
+		status["ok"] = false
 	}
 	if s.ScanInfo != nil {
 		lastRun, running := s.ScanInfo()
