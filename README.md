@@ -40,6 +40,7 @@ go build -o dashd ./cmd/dashd
 |---|---|---|
 | `-db` | `~/.local/share/dashd/dashboard.db` | Database path |
 | `-addr` | `127.0.0.1:8753` | Listen address; `0.0.0.0` exposes it to the network |
+| `-auth-token` | none | Require `Authorization: Bearer <token>`; use it if you expose the dashboard |
 | `-interval` | `30s` | How often to scan |
 | `-home` | `$HOME` | Where to look for agent logs |
 | `-models` | next to the binary, else `./models.json` | OpenRouter price dump |
@@ -129,10 +130,16 @@ Parsers emit `model.Call` and `model.ToolCall`; everything downstream is a rollu
 
 ```bash
 go test ./...
+go test -race ./...
 go vet ./...
+gofmt -l .
 ```
 
-52 tests, no external test dependencies. The ones that matter most are the ones
+CI runs `go vet`, `gofmt -l` and `go test -race ./...`, and all three must be
+clean before a PR. See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout map and
+how to add a source.
+
+Around 60-odd tests, no external test dependencies. The ones that matter most are the ones
 that guard properties invisible in a diff:
 
 * **A growing log is extended, not re-counted.** Re-scanning must not duplicate.
@@ -145,8 +152,10 @@ that guard properties invisible in a diff:
   plausible wrong number, since its output becomes token counts.
 * **Nothing untrusted reaches the page as markup** — model names, project paths
   and titles are all attacker-controlled from the page's point of view.
-* **The parsers agree with the previous Python implementation**, verified
-  against a dump of its per-conversation output.
+* **The parsers agree with the previous Python implementation.** There is a
+  reference-comparison test, but it reads a developer's own local dump and gemini
+  logs, so it skips unless those are present — it is not a guarantee you get from
+  a clean checkout.
 
 ## Running it
 
@@ -161,3 +170,12 @@ that guard properties invisible in a diff:
 
 `GET /healthz` reports the stored totals and the last scan time, which is enough
 for a liveness probe or a status bar.
+
+## Security
+
+The default bind is `127.0.0.1` and there is no authentication. That is the right
+default for a local tool, but `-addr 0.0.0.0` hands the whole dashboard to
+anything that can reach the port: project paths, session titles and cost figures,
+all read from agent logs you did not write. If you expose it, pass
+`-auth-token` and send `Authorization: Bearer <token>`. See
+[SECURITY.md](SECURITY.md) for the threat model.

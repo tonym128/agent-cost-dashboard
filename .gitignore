@@ -9,6 +9,12 @@ node_modules/
 # The compiled dashboard binary. Build it with `go build -o dashd ./cmd/dashd`.
 /dashd
 *.test
+dist/
+
+# Test and profiling output from `go test -race -coverprofile` and friends.
+*.out
+*.prof
+coverage.txt
 
 # The dashboard's own database, which holds this machine's session history and
 # cost figures. It is rebuilt by a scan, so there is nothing to keep in git.
