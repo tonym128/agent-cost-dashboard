@@ -120,8 +120,18 @@ func TestOpenCodeSessionRowsBecomeCalls(t *testing.T) {
 	// A cache read is cheaper than an input token. If the two came out equal the
 	// nested lookup above is not being read and the cost is wrong in a way the
 	// arithmetic above would not show on its own.
+	//
+	// This was a mid-test t.Skipf, which is worse than useless: if the
+	// relationship ever stopped holding it truncated the rest of the test — the
+	// wall-clock bound, the tool count, the "no transcript file" claim — so those
+	// assertions would silently stop being checked. It is now a fatal, before the
+	// assertions it used to skip, and states what to do about it.
 	if rates.CacheRead >= rates.Input {
-		t.Skipf("manual pricing has cache read $%.2f >= input $%.2f, so this proves nothing",
+		t.Fatalf("resolved rates for claude-sonnet-4-6 price a cache read at $%.2f/M, "+
+			"which is not below the $%.2f/M input rate: the nested cache lookup this "+
+			"test checks cannot be demonstrated against these rates. If the vendor has "+
+			"genuinely changed them, pick a model in the fixture whose rates do have "+
+			"that shape rather than deleting the check.",
 			rates.CacheRead, rates.Input)
 	}
 

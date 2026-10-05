@@ -1,0 +1,12 @@
+{
+ "comment": "Verbatim slice of /tmp/opencode/py_agy.json, the dump the previous Python implementation wrote for every Antigravity conversation on the authoring machine. The full dump's sha256 is 2fad6d10d85f055736a72e0a5aec6a188cea13bec16f090c32951d1ac1bf9169; anyone holding that dump can confirm this slice is unaltered by recomputing the hash and comparing the entry below. Only the one conversation the committed parser fixture reproduces is copied here; the other twelve are someone else's transcripts and are deliberately not committed. The conversation id is the real one, because renaming it would make the entry unverifiable against the dump it came from.",
+ "conversation": "5e9f5c5a-7bcd-430a-ae4d-0b723aa20a4a",
+ "reported": {
+  "messages": 51,
+  "input": 304660,
+  "output": 6329,
+  "cached": 2274999,
+  "reasoning": 13284,
+  "cost": 0.324919
+ }
+}

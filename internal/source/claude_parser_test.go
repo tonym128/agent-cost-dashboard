@@ -45,6 +45,16 @@ func totalsOf(sw model.SessionWrite) sessionTotals {
 // around: a wrong number is almost always a number that breaks one of these.
 func checkInvariants(t *testing.T, sw model.SessionWrite) {
 	t.Helper()
+	// The generated-count partition is *not* asserted here, because it cannot be:
+	// a call's OutputTokens and ReasoningTokens are two halves of one number the
+	// log states, and that number is not on the call. It used to be asserted here
+	// as `ReasoningTokens > OutputTokens+ReasoningTokens`, which reduces to
+	// `0 > OutputTokens` and so only ever fired on a negative output the loop above
+	// had already caught — removing the Codex reasoning clamp while neutering that
+	// line left the whole package green.
+	//
+	// The real invariant is checked by checkGenerated, at each site where the
+	// fixture's own generated count is known.
 	if sw.Session.UID == "" {
 		t.Error("session has no uid: every stored row hangs off one")
 	}
@@ -74,10 +84,6 @@ func checkInvariants(t *testing.T, sw model.SessionWrite) {
 		}
 		if c.CostUSD < 0 {
 			t.Errorf("call %q has a negative cost of %v", c.CallKey, c.CostUSD)
-		}
-		// Reasoning is a slice of what was generated, never an addition to it.
-		if c.ReasoningTokens > c.OutputTokens+c.ReasoningTokens {
-			t.Errorf("call %q has more reasoning than generated output", c.CallKey)
 		}
 		// A priced call that costs nothing is a confident wrong number, and it
 		// defeats the unpriced safety net.
@@ -182,10 +188,7 @@ func TestClaudeSessionFixture(t *testing.T) {
 			t.Errorf("%s reasoning = %d, want %d", w.key, got.ReasoningTokens, w.reasoning)
 		}
 		// Output is the visible remainder: the generated count less reasoning.
-		if got.OutputTokens+got.ReasoningTokens != w.generated {
-			t.Errorf("%s output %d + reasoning %d != generated %d",
-				w.key, got.OutputTokens, got.ReasoningTokens, w.generated)
-		}
+		checkGenerated(t, got, w.generated)
 		if got.Model != "claude-opus-4-8" {
 			t.Errorf("%s model = %q", w.key, got.Model)
 		}
@@ -282,9 +285,17 @@ func TestClaudeRecordsThatContributeNothing(t *testing.T) {
 	if tot.input != 460 {
 		t.Errorf("input total %d: a usage-less record contributed tokens", tot.input)
 	}
+	// 410 + 1800, the two generated counts the fixture's usage blocks state. The
+	// synthetic record's zeroes must not appear here: contributing them would add
+	// a call worth nothing to the call count without changing this sum, which is
+	// why the call count is asserted separately above.
 	if tot.output+tot.reasoning != 2210 {
-		t.Errorf("generated total %d, want 2210", tot.output+tot.reasoning)
+		t.Errorf("generated total %d, want 2210 (the sum of the two usage blocks)", tot.output+tot.reasoning)
 	}
+	// Per call, so a parser that folded one record's reasoning into another's
+	// output cannot hide behind an aggregate that happens to add up.
+	checkGenerated(t, sw.Calls[0], 410)
+	checkGenerated(t, sw.Calls[1], 1800)
 	if tot.cost <= 0 {
 		t.Errorf("cost %v, want a positive total", tot.cost)
 	}
@@ -380,5 +391,26 @@ func TestClaudeIncrementalScanAppendsRatherThanRecounts(t *testing.T) {
 	}
 	if c.SessionUID != "session-1" {
 		t.Errorf("the increment lost the session uid: %q", c.SessionUID)
+	}
+}
+
+// checkGenerated asserts the partition invariant the tautological check in
+// checkInvariants was standing in for: for a record whose generated count the log
+// states, the visible output and the reasoning are two halves of that one number,
+// never an addition to it.
+//
+// Anthropic bills extended thinking inside output_tokens, so without this the
+// reasoning figure is not verifiable at all: a parser that dropped the split
+// entirely, or double-counted the thinking, both produce an OutputTokens +
+// ReasoningTokens that differs from the log, which is exactly what a summed
+// assertion catches.
+//
+// generated is the count as written in the log, not one derived from the parse.
+func checkGenerated(t *testing.T, c model.Call, generated int) {
+	t.Helper()
+	if got := c.OutputTokens + c.ReasoningTokens; got != generated {
+		t.Errorf("call %q: output %d + reasoning %d = %d, want the %d the log reports "+
+			"as generated: reasoning is a slice of that count, not an addition to it",
+			c.CallKey, c.OutputTokens, c.ReasoningTokens, got, generated)
 	}
 }

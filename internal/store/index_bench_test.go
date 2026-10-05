@@ -121,6 +121,10 @@ var benchModelNames = []string{
 	"gpt-5-mini", "o3", "gemini-2.5-pro", "qwen3-coder",
 }
 
+// benchBase is in local time on purpose: the call table stores a local
+// YYYY-MM-DD, so a benchmark whose corpus is built in another zone measures a
+// day-bucketing path the production one never takes. Every bench time below this
+// one is derived from it for the same reason.
 var benchBase = time.Date(2026, 3, 15, 9, 0, 0, 0, time.Local)
 
 // benchCorpus is the corpus every measurement here runs against: 200 sessions,

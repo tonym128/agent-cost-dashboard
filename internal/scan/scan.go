@@ -500,38 +500,69 @@ func (s *Scanner) recordStatus(agent string, seen, changed, ingested int, err er
 // thousands of files.
 var defaultSkipDirs = []string{"node_modules", ".git", "__pycache__", "target", "dist", "build"}
 
+// HomeRelativeRoots is where each agent keeps its session logs, as a path
+// relative to the user's home directory.
+//
+// It is exported because the same six locations are needed by anything that has
+// to tell a reader where to look: the web layer's source panel shows a path for
+// every agent so a miss can be acted on, and a hint pointing somewhere the
+// scanner never looked is worse than no hint at all. Keeping the list here means
+// the hint and the scan cannot disagree — which is the defect this replaced, where
+// the two lists were duplicated and nothing checked they agreed.
+//
+// OpenCode is a file rather than a tree, so it is a path to a database; the
+// scanner takes it separately from the tree-shaped sources.
+var HomeRelativeRoots = map[string]string{
+	model.AgentPi:       ".pi/agent/sessions",
+	model.AgentClaude:   ".claude/projects",
+	model.AgentCodex:    ".codex/sessions",
+	model.AgentGemini:   ".gemini",
+	model.AgentAgy:      ".gemini/antigravity/conversations",
+	model.AgentOpencode: ".local/share/opencode/opencode.db",
+}
+
+// HomeRelativeRoot returns one agent's log location relative to the home
+// directory, and whether this build knows the agent at all.
+func HomeRelativeRoot(agent string) (string, bool) {
+	rel, ok := HomeRelativeRoots[agent]
+	return rel, ok
+}
+
 // DefaultSources returns the agents this project knows how to read, located
 // under the given home directory.
+//
+// The roots come from HomeRelativeRoots rather than being spelled out here, so
+// the location shown on the page and the location walked are the same value.
 func DefaultSources(home string) ([]Source, string) {
+	root := func(agent string) string { return filepath.Join(home, HomeRelativeRoots[agent]) }
 	sources := []Source{
 		{
-			Agent: model.AgentPi, Root: filepath.Join(home, ".pi/agent/sessions"),
+			Agent: model.AgentPi, Root: root(model.AgentPi),
 			Ext: ".jsonl", Recurse: true, SkipDirs: defaultSkipDirs,
 			parserFor: func() source.Parser { return source.NewPiParser() },
 		},
 		{
-			Agent: model.AgentClaude, Root: filepath.Join(home, ".claude/projects"),
+			Agent: model.AgentClaude, Root: root(model.AgentClaude),
 			Ext: ".jsonl", Recurse: true, SkipDirs: defaultSkipDirs,
 			parserFor: func() source.Parser { return source.NewClaudeParser() },
 		},
 		{
-			Agent: model.AgentCodex, Root: filepath.Join(home, ".codex/sessions"),
+			Agent: model.AgentCodex, Root: root(model.AgentCodex),
 			Ext: ".jsonl", Recurse: true, SkipDirs: defaultSkipDirs,
 			parserFor: func() source.Parser { return source.NewCodexParser() },
 		},
 		{
-			Agent: model.AgentGemini, Root: filepath.Join(home, ".gemini"),
+			Agent: model.AgentGemini, Root: root(model.AgentGemini),
 			Ext: ".jsonl", Recurse: true, SkipDirs: defaultSkipDirs,
 			parserFor: func() source.Parser { return source.NewGeminiParser() },
 		},
 		{
-			Agent: model.AgentAgy, Root: filepath.Join(home, ".gemini/antigravity/conversations"),
+			Agent: model.AgentAgy, Root: root(model.AgentAgy),
 			Ext: ".db", Recurse: false, SkipDirs: defaultSkipDirs,
 			parserFor: func() source.Parser { return source.NewAntigravityParser() },
 		},
 	}
-	openCode := filepath.Join(home, ".local/share/opencode/opencode.db")
-	return sources, openCode
+	return sources, root(model.AgentOpencode)
 }
 
 // testLogger is referenced by the package tests; declared here so the tests do

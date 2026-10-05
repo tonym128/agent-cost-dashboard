@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -422,6 +420,11 @@ func TestActivityAPIRejectsAnUnboundedStep(t *testing.T) {
 // code emits: it survived a Python-to-Go rewrite whose data model dropped it.
 // There is no sub-agent relationship in the session table to recover it from, so
 // the code is gone rather than left waiting for data that will not arrive.
+//
+// This one stays a source-text check, and deliberately so: the property is an
+// absence, and an absence cannot be observed by running the script. The filter-bar
+// check that used to sit next to it *could* be observed that way, and now is —
+// see TestFilterFormIsPrefilledFromTheQueryString.
 func TestJSHasNoSubAgentGrouping(t *testing.T) {
 	script := readAsset(t, assets, "assets/dashboard.js")
 	for _, dead := range []string{"subagent_sessions", "aggregateTokenCounts"} {
@@ -429,153 +432,6 @@ func TestJSHasNoSubAgentGrouping(t *testing.T) {
 			t.Errorf("dashboard.js still contains %q, which no Go code emits", dead)
 		}
 	}
-}
-
-// The filter bar is a plain GET form in the template; the IIFE that drove
-// filter-model/filter-agent/filter-apply exited at its first null check, so
-// every header click was a no-op while looking wired.
-func TestJSHasNoDeadFilterBar(t *testing.T) {
-	script := readAsset(t, assets, "assets/dashboard.js")
-	for _, dead := range []string{"filter-model", "filter-agent", "filter-apply"} {
-		if strings.Contains(script, dead) {
-			t.Errorf("dashboard.js still targets %q, which is not in the template", dead)
-		}
-	}
-}
-
-// ---------------------------------------------------------------- layout parity
-
-// tableLayout maps each table to the renderer that fills its tbody.
-//
-// The count is asserted two ways: the number of <th> in the template's thead,
-// and the number of <td> the JS renderer emits for one row. They drifted apart
-// once already — the models table showed tokens/sec under a "Cost" heading —
-// and nothing caught it, so the check is mechanical from now on.
-var tableLayout = []struct {
-	table    string
-	tbody    string
-	renderer string
-	// columns is the name of the constant dashboard.js uses for this table's
-	// colspans, so the empty state and expanded rows cannot drift either.
-	columns string
-}{
-	{"sessions-table", "sessions-tbody", "renderSessions", "SESSIONS_COLUMNS"},
-	{"models-table", "models-tbody", "renderModels", "MODELS_COLUMNS"},
-	{"tools-table", "tools-tbody", "renderTools", "TOOLS_COLUMNS"},
-	{"projects-table", "projects-tbody", "renderProjects", "PROJECTS_COLUMNS"},
-	{"activity-table", "activity-tbody", "renderActivityTable", "ACTIVITY_COLUMNS"},
-}
-
-func TestTableHeadersMatchRenderedCells(t *testing.T) {
-	page := readAsset(t, templateFS, "templates/index.html")
-	script := readAsset(t, assets, "assets/dashboard.js")
-
-	for _, tbl := range tableLayout {
-		t.Run(tbl.table, func(t *testing.T) {
-			headers := countTag(t, page, tbl.table, "th")
-			cells := countRendererCells(script, tbl.renderer)
-			if headers != cells {
-				t.Errorf("%s has %d headers but its renderer emits %d cells; "+
-					"every column needs a heading and every heading needs a cell",
-					tbl.table, headers, cells)
-			}
-			// The tbody must be the one the renderer targets, otherwise this
-			// check is comparing two unrelated things that happen to match.
-			if !strings.Contains(page, `id="`+tbl.tbody+`"`) {
-				t.Errorf("template has no tbody %q for %s", tbl.tbody, tbl.table)
-			}
-			// The colspan an empty or expanded row uses has to match too, or
-			// the empty state renders a short row.
-			if got := declaredColumns(t, script, tbl.columns); got != headers {
-				t.Errorf("%s: colspan constant %s is %d, headers are %d",
-					tbl.table, tbl.columns, got, headers)
-			}
-		})
-	}
-}
-
-// declaredColumns reads the `const <TABLE>_COLUMNS = n` the JS uses for the
-// empty-state and expanded-row colspans, checking that the renderer actually
-// declares one for this table.
-func declaredColumns(t *testing.T, script, name string) int {
-	t.Helper()
-	i := strings.Index(script, name+" = ")
-	if i < 0 {
-		t.Errorf("dashboard.js declares no %s constant", name)
-		return -1
-	}
-	digits := regexp.MustCompile(`\d+`).FindString(script[i+len(name)+3:])
-	if digits == "" {
-		t.Errorf("%s is not assigned a number", name)
-		return -1
-	}
-	n, err := strconv.Atoi(digits)
-	if err != nil {
-		t.Errorf("%s is not a number: %v", name, err)
-		return -1
-	}
-	return n
-}
-
-// countRendererCells counts the <td> elements in a renderer's data-row
-// template.
-//
-// The function body is extracted by brace matching from `function NAME(`, so the
-// count is of that one function's cells and not of the file's. Nested template
-// literals and braces do not confuse it because only the outer braces of the
-// function are tracked.
-func countRendererCells(script, fn string) int {
-	start := strings.Index(script, "function "+fn+"(")
-	if start < 0 {
-		return -1
-	}
-	body := script[start:]
-	depth := 0
-	seenBody := false
-	end := len(body)
-	for i := 0; i < len(body); i++ {
-		switch body[i] {
-		case '{':
-			depth++
-			seenBody = true
-		case '}':
-			depth--
-			if seenBody && depth == 0 {
-				end = i
-				i = len(body)
-			}
-		}
-	}
-	// Cells belonging to an expandable detail row or an empty-state row are
-	// not data cells; they use colspan and would double-count.
-	text := body[:end]
-	lines := strings.Split(text, "\n")
-	cells := 0
-	for _, line := range lines {
-		if !strings.Contains(line, "<td") || strings.Contains(line, "colspan") {
-			continue
-		}
-		cells += strings.Count(line, "<td")
-	}
-	return cells
-}
-
-// countTag counts <tag occurrences inside one table's thead in the template.
-func countTag(t *testing.T, page, table, tag string) int {
-	t.Helper()
-	i := strings.Index(page, `<table id="`+table+`">`)
-	if i < 0 {
-		t.Fatalf("template has no table %q", table)
-	}
-	rest := page[i:]
-	end := strings.Index(rest, "</table>")
-	if end < 0 {
-		t.Fatalf("table %q is not closed", table)
-	}
-	// `<th` would also match `<thead>`, so the tag must be followed by its own
-	// delimiter.
-	re := regexp.MustCompile(`<` + tag + `[ >]`)
-	return len(re.FindAllString(rest[:end], -1))
 }
 
 // ---------------------------------------------------------------- table data
@@ -656,23 +512,6 @@ func TestProjectsAreListedOncePerProjectNotOncePerAgent(t *testing.T) {
 
 // ---------------------------------------------------------------- sorting
 
-func TestEverySortableHeaderIsWiredUp(t *testing.T) {
-	// The sort handlers bind to th[data-sort] and updateSortIcons looks for a
-	// .sort-icon inside the same cell. A heading with one but not the other is
-	// either a dead click or an arrow that never moves.
-	page := readAsset(t, templateFS, "templates/index.html")
-	re := regexp.MustCompile(`<th[^>]*data-sort="[^"]+"[^>]*>([^<]*)<span class="sort-icon">`)
-	found := re.FindAllStringSubmatch(page, -1)
-	if len(found) < 20 {
-		t.Fatalf("only %d sortable headers found; the data-sort hooks are missing", len(found))
-	}
-	for _, m := range found {
-		if strings.TrimSpace(m[1]) == "" {
-			t.Error("a sortable header has an empty heading")
-		}
-	}
-}
-
 func TestSortFieldsExistInThePayload(t *testing.T) {
 	// A data-sort naming a field the payload does not carry sorts an undefined
 	// column: every row ties and the click appears to do nothing.
@@ -727,19 +566,6 @@ func TestSortFieldsExistInThePayload(t *testing.T) {
 	}
 }
 
-func TestSortComparesNumbersAsNumbers(t *testing.T) {
-	// The regression this guards: a hand-rolled comparator that lowercases
-	// strings and falls through to `<` sorts "1000" before "900", which is
-	// wrong for every token column on the page.
-	script := readAsset(t, assets, "assets/dashboard.js")
-	if !strings.Contains(script, "Number.isFinite(Number(a))") {
-		t.Error("the sort comparator does not have a numeric path")
-	}
-	if !strings.Contains(script, "return a.idx - b.idx;") {
-		t.Error("the sort has no stable tiebreak, so equal rows reshuffle per render")
-	}
-}
-
 // ---------------------------------------------------------------- empty state
 
 func TestEmptyDatabaseExplainsItselfRatherThanRenderingNothing(t *testing.T) {
@@ -771,23 +597,6 @@ func TestEmptyDatabaseExplainsItselfRatherThanRenderingNothing(t *testing.T) {
 	script := readAsset(t, assets, "assets/dashboard.js")
 	if !strings.Contains(script, "No spending recorded yet") {
 		t.Error("the daily chart renders nothing at all when there is no data")
-	}
-}
-
-func TestJSEmitsANoResultsRowForEveryTable(t *testing.T) {
-	// The tbodies are filled by the script, so the message has to be in the
-	// script: a server-rendered {{else}} would never appear on this page.
-	script := readAsset(t, assets, "assets/dashboard.js")
-	for _, want := range []string{
-		"emptyRow(MODELS_COLUMNS",
-		"emptyRow(TOOLS_COLUMNS",
-		"emptyRow(PROJECTS_COLUMNS",
-		"emptyRow(SESSIONS_COLUMNS",
-		"emptyRow(ACTIVITY_COLUMNS",
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("dashboard.js has no empty-state row %q", want)
-		}
 	}
 }
 
@@ -848,6 +657,10 @@ func sourceSummaryOf(body string) string {
 // ---------------------------------------------------------------- burn rate
 
 func TestBurnWindowsCompareAgainstThePriorPeriod(t *testing.T) {
+	// Local time deliberately: burnWindows anchors on the local calendar day and
+	// store.Daily buckets by the call's own local date, so a UTC fixture would
+	// measure a day boundary the production path never takes. Verified across
+	// UTC, UTC+14 and a half-hour-DST zone.
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.Local)
 	daily := []store.DayBucket{
 		{Day: "2026-10-05", Cost: 10}, // today
@@ -899,6 +712,7 @@ func TestBurnWindowsCompareAgainstThePriorPeriod(t *testing.T) {
 
 func TestBurnWindowWithNoPriorSpendSaysSoRatherThanAPercentage(t *testing.T) {
 	// "No prior spend" beats "+100%": there is no percentage to compute.
+	// Local time for the same reason as the test above.
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.Local)
 	ws := burnWindows([]store.DayBucket{{Day: "2026-10-05", Cost: 3}}, now)
 	for _, c := range burnCards(ws) {

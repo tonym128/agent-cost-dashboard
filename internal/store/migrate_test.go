@@ -40,6 +40,14 @@ const (
 // fixtureAt is the instant the fixture's first call is recorded at, in local
 // time — which is what decides the day bucket, since day is derived from the
 // call's own local date.
+//
+// The time.Local dependence is deliberate and load-bearing, not incidental: the
+// call table stores a local YYYY-MM-DD the parser computed, and the queries group
+// by that string. So the fixture has to be constructed in the same zone the
+// queries will read it in, or every day-bucketing assertion fails for a reason
+// that has nothing to do with the code. Verified across UTC, UTC+14 and a
+// half-hour-DST zone; all three pass. Constructing the fixture in UTC instead
+// would be simpler and wrong: it would only work in the zone it was written in.
 func fixtureAt(t *testing.T) time.Time {
 	t.Helper()
 	at, err := time.ParseInLocation(fixtureTime, fixtureStart, time.Local)
@@ -867,17 +875,58 @@ func TestRollupPlansUseCoveringIndexes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			plan := strings.Join(planFor(t, st, tc.query, tc.args...), " | ")
 			t.Logf("plan: %s", plan)
-			if !strings.Contains(plan, "USING COVERING INDEX "+tc.want) {
-				t.Errorf("plan does not scan %s as a covering index:\n%s", tc.want, plan)
-			}
-			// A bare "SCAN call" is the table itself. A covering-index scan is
-			// fine; the table is not.
-			for _, step := range planFor(t, st, tc.query, tc.args...) {
-				if strings.HasPrefix(step, "SCAN call") && !strings.Contains(step, "COVERING INDEX") {
-					t.Errorf("plan scans the call table itself: %s", step)
-				}
-			}
+			assertCoveringIndexScan(t, plan, tc.want)
 		})
+	}
+}
+
+// assertCoveringIndexScan checks one EXPLAIN QUERY PLAN result.
+//
+// SQLite's plan wording is not a stable interface: the exact phrasing of a
+// covering-index scan has changed between releases ("USING COVERING INDEX x",
+// "SEARCH ... USING COVERING INDEX x", "SCAN ... USING COVERING INDEX x"), and a
+// modernc.org/sqlite bump can change it without any change to this schema or
+// these queries. Matching the literal string meant a version bump produced a
+// failure that looked like a missing index.
+//
+// So the wording is matched loosely and in one place, and what is asserted is the
+// property rather than the phrasing: the named index is used to satisfy the query,
+// and it does so as a covering scan rather than by reading the table. A plan that
+// mentions the index but also scans the table for the row is the failure this
+// catches, and it is stated in those terms.
+func assertCoveringIndexScan(t *testing.T, plan, index string) {
+	t.Helper()
+	steps := strings.Split(plan, " | ")
+
+	usesIndex, covering := false, false
+	for _, step := range steps {
+		if !strings.Contains(step, index) {
+			continue
+		}
+		usesIndex = true
+		// "COVERING" is the one word that carries the meaning here and is stable
+		// across the phrasings above: it says every column the query needs is in
+		// the index, so the table is not read.
+		if strings.Contains(strings.ToUpper(step), "COVERING") {
+			covering = true
+		}
+	}
+	if !usesIndex {
+		t.Errorf("the plan does not use %s, which exists to make this rollup a "+
+			"covering scan:\n%s", index, plan)
+		return
+	}
+	if !covering {
+		t.Errorf("the plan uses %s but not as a covering index, so it reads the "+
+			"table for every row:\n%s", index, plan)
+	}
+	// A full table scan is the failure this whole test exists for, and it is
+	// detectable independently of any wording: a step that starts by scanning the
+	// table with no index named.
+	for _, step := range steps {
+		if isFullScan(step) {
+			t.Errorf("the plan scans a whole table:\n%s", plan)
+		}
 	}
 }
 
