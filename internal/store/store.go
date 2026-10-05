@@ -115,7 +115,7 @@ CREATE INDEX IF NOT EXISTS call_project  ON call(project);
 CREATE INDEX IF NOT EXISTS call_model    ON call(model);
 CREATE INDEX IF NOT EXISTS call_agent    ON call(agent);
 CREATE INDEX IF NOT EXISTS call_session  ON call(session_uid);
-
+` + v2RollupIndexes + `
 CREATE TABLE IF NOT EXISTS tool_call (
 	session_uid TEXT    NOT NULL,
 	call_key    TEXT    NOT NULL,
@@ -195,7 +195,59 @@ CREATE TABLE IF NOT EXISTS scan_status (
 ) WITHOUT ROWID;
 `
 
-// ---------------------------------------------------------------- migrations
+// v2RollupIndexes are the covering indexes for the dashboard's rollups.
+//
+// `call` is WITHOUT ROWID, so every index entry carries the whole primary key
+// (session_uid, call_key). An index on a grouping column alone therefore still
+// has to visit the primary-key btree to read the value being summed — one extra
+// btree descent per row, and `call` has one row per LLM call. Listing the
+// columns a rollup reads after the key makes the index a *covering* index: the
+// aggregate is computed from the index alone.
+//
+// Each of these answers a specific query in queries.go, and the plan is pinned
+// by a test in this package so a later schema edit cannot quietly undo it:
+//
+//   - Daily groups by (day, model) and reads nothing but cost_usd and the row
+//     count. This is the exact column set, and the key order is the GROUP BY
+//     order, so the daily chart's grouping sort disappears with it.
+//   - Models groups by model and sums ten columns, so this index is wide by
+//     necessity; it is the per-model table, one of the most expensive rollups.
+//   - ProjectModels groups by (project, model) and sums four columns.
+//   - The tool rollup attributes each tool result to the first LLM call at or
+//     after it in the same session. That seek needs (session_uid, ts) in that
+//     order, which no existing index provided: call_session is on session_uid
+//     alone, and the primary key orders a session's calls by call_key, so
+//     SQLite was rescanning every call in the session for every tool row.
+//
+// The cost is on the write side, and it is real: four more index entries per
+// ingested call, paid on the scan path. Measured over 24k calls and 24k tool
+// calls through the ingestion API, these four cost roughly 40% on ingest and
+// 55% on database size, and buy about a 4x speed-up on the rollups the page
+// runs on every load.
+//
+// call_day, call_project, call_session and call_model are each now a strict
+// prefix of one of these indexes, so nothing can use them that cannot use the
+// wider one — dropping those four brings the ingest cost back to roughly 15%.
+// That is left as a separate, deliberate step rather than folded in here.
+const v2RollupIndexes = `
+-- Daily: (day, model) is the grouping key, cost_usd the only value summed.
+CREATE INDEX IF NOT EXISTS call_day_model_cost
+	ON call(day, model, cost_usd);
+
+-- Models: grouping key plus every column the per-model table sums or bounds.
+CREATE INDEX IF NOT EXISTS call_model_roll
+	ON call(model, cost_usd, total_tokens, input_tokens, output_tokens,
+	        cache_read_tokens, cache_write_tokens, reasoning_tokens,
+	        llm_seconds, priced, ts);
+
+-- ProjectModels: grouping key plus the four columns that table sums.
+CREATE INDEX IF NOT EXISTS call_project_model_cost
+	ON call(project, model, cost_usd, total_tokens, output_tokens, llm_seconds);
+
+-- Tool cost attribution: the seek key, with the attributed cost alongside it.
+CREATE INDEX IF NOT EXISTS call_session_ts
+	ON call(session_uid, ts, cost_usd);
+`
 
 // targetVersion is the schema version this build of the code produces: the
 // version reached by the last entry in migrations.
@@ -266,6 +318,11 @@ var migrations = []migration{
 		// TestMigrationFromV0Database.
 		version: 1,
 		name:    "baseline schema (claimed, not applied)",
+	},
+	{
+		version: 2,
+		name:    "covering indexes for the dashboard rollups",
+		apply:   execScript(v2RollupIndexes),
 	},
 }
 

@@ -221,6 +221,18 @@ type DayBucket struct {
 	Models map[string]float64
 }
 
+// dailySQL assembles the daily rollup. The filter clause is spliced in before
+// the grouping, so the chart is built from exactly the rows the filter selected.
+//
+// The statement is a named function rather than an inline literal so that the
+// index-usage test can EXPLAIN the same text the page runs.
+func dailySQL(where string) string {
+	return `
+		SELECT day, model, COALESCE(SUM(cost_usd),0) AS cost, COUNT(*)
+		FROM call` + where + `
+		GROUP BY day, model ORDER BY day`
+}
+
 // Daily returns one bucket per day with any activity.
 //
 // The day string is produced by the database from the call's own local date, so
@@ -228,9 +240,7 @@ type DayBucket struct {
 // risking a timezone disagreement.
 func (s *Store) Daily(ctx context.Context, f Filter) ([]DayBucket, error) {
 	where, args := f.where("", "ts")
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT day, model, COALESCE(SUM(cost_usd),0) AS cost, COUNT(*)
-		 FROM call`+where+` GROUP BY day, model ORDER BY day`, args...)
+	rows, err := s.db.QueryContext(ctx, dailySQL(where), args...)
 	if err != nil {
 		return nil, fmt.Errorf("daily: %w", err)
 	}
@@ -370,10 +380,9 @@ type ModelStat struct {
 	Unpriced         int
 }
 
-// Models returns per-model totals, most expensive first.
-func (s *Store) Models(ctx context.Context, f Filter) ([]ModelStat, error) {
-	where, args := f.where("", "ts")
-	rows, err := s.db.QueryContext(ctx, `
+// modelsSQL assembles the per-model rollup behind the models table.
+func modelsSQL(where string) string {
+	return `
 		SELECT model, COALESCE(SUM(cost_usd),0), COUNT(*),
 		       COALESCE(SUM(total_tokens),0), COALESCE(SUM(input_tokens),0),
 		       COALESCE(SUM(output_tokens),0), COALESCE(SUM(cache_read_tokens),0),
@@ -381,8 +390,14 @@ func (s *Store) Models(ctx context.Context, f Filter) ([]ModelStat, error) {
 		       COALESCE(SUM(llm_seconds),0),
 		       COALESCE(MIN(NULLIF(ts,0)),0), COALESCE(MAX(ts),0),
 		       COALESCE(SUM(CASE WHEN priced = 0 THEN 1 ELSE 0 END),0)
-		FROM call`+where+`
-		GROUP BY model ORDER BY SUM(cost_usd) DESC, model`, args...)
+		FROM call` + where + `
+		GROUP BY model ORDER BY SUM(cost_usd) DESC, model`
+}
+
+// Models returns per-model totals, most expensive first.
+func (s *Store) Models(ctx context.Context, f Filter) ([]ModelStat, error) {
+	where, args := f.where("", "ts")
+	rows, err := s.db.QueryContext(ctx, modelsSQL(where), args...)
 	if err != nil {
 		return nil, fmt.Errorf("models: %w", err)
 	}
@@ -437,6 +452,23 @@ func (s *Store) Projects(ctx context.Context, f Filter) ([]ProjectStat, error) {
 	return out, rows.Err()
 }
 
+// toolsSQL assembles the per-tool rollup, including the cost attribution seek.
+//
+// cost_usd is in call_session_ts so the seek is answered from that index alone;
+// without it every tool row was a rescan of its session's calls.
+func toolsSQL(where string) string {
+	return `
+		SELECT t.tool, COUNT(*), COALESCE(SUM(t.seconds),0),
+		       COALESCE(SUM(t.is_error),0),
+		       COALESCE(SUM((
+		           SELECT c.cost_usd FROM call c
+		           WHERE c.session_uid = t.session_uid AND c.ts >= t.ts
+		           ORDER BY c.ts LIMIT 1
+		       )), 0)
+		FROM tool_call t` + where + `
+		GROUP BY t.tool ORDER BY COUNT(*) DESC`
+}
+
 // ToolStat is one tool's totals.
 type ToolStat struct {
 	Tool    string
@@ -458,18 +490,10 @@ func (s *Store) Tools(ctx context.Context, f Filter) ([]ToolStat, error) {
 	// same session: that is the request the tool was issued in the context of.
 	// A tool call is not itself billable, so this is an association rather than
 	// a price, and the page labels it as such. The seek is an index lookup on
-	// (session_uid, ts) rather than a rescan.
-	q := `
-		SELECT t.tool, COUNT(*), COALESCE(SUM(t.seconds),0),
-		       COALESCE(SUM(t.is_error),0),
-		       COALESCE(SUM((
-		           SELECT c.cost_usd FROM call c
-		           WHERE c.session_uid = t.session_uid AND c.ts >= t.ts
-		           ORDER BY c.ts LIMIT 1
-		       )), 0)
-		FROM tool_call t` + where + `
-		GROUP BY t.tool ORDER BY COUNT(*) DESC`
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	// (session_uid, ts) rather than a rescan — which is what call_session_ts
+	// exists for, and what call_session alone did not provide: the primary key
+	// orders a session's calls by call_key, not by ts.
+	rows, err := s.db.QueryContext(ctx, toolsSQL(where), args...)
 	if err != nil {
 		return nil, fmt.Errorf("tools: %w", err)
 	}
@@ -719,17 +743,23 @@ type ProjectModel struct {
 	LLMSeconds   float64
 }
 
+// projectModelsSQL assembles the per-project, per-model rollup behind the
+// expandable project rows.
+func projectModelsSQL(where string) string {
+	return `
+		SELECT project, model, COALESCE(SUM(cost_usd),0), COUNT(*),
+		       COALESCE(SUM(total_tokens),0), COALESCE(SUM(output_tokens),0),
+		       COALESCE(SUM(llm_seconds),0)
+		FROM call` + where + `
+		GROUP BY project, model
+		ORDER BY project, SUM(cost_usd) DESC`
+}
+
 // ProjectModels returns the model breakdown per project, for the expandable
 // project rows.
 func (s *Store) ProjectModels(ctx context.Context, f Filter) ([]ProjectModel, error) {
 	where, args := f.where("", "ts")
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT project, model, COALESCE(SUM(cost_usd),0), COUNT(*),
-		       COALESCE(SUM(total_tokens),0), COALESCE(SUM(output_tokens),0),
-		       COALESCE(SUM(llm_seconds),0)
-		FROM call`+where+`
-		GROUP BY project, model
-		ORDER BY project, SUM(cost_usd) DESC`, args...)
+	rows, err := s.db.QueryContext(ctx, projectModelsSQL(where), args...)
 	if err != nil {
 		return nil, fmt.Errorf("project models: %w", err)
 	}
