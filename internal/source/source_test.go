@@ -81,22 +81,230 @@ func TestPricerPrefersLiveCatalogueThenFallback(t *testing.T) {
 	}
 }
 
+// TestPricerCostArithmetic is expressed as relationships between rates, not as
+// dollar amounts.
+//
+// The previous version asserted that a million input tokens of gemini-2.5-pro
+// cost between $1.20 and $1.30, which is a claim about a vendor's price list
+// rather than about this code: models.json is a 410KB dump rewritten by
+// update_models.py, so a price change broke CI for reasons unrelated to any
+// parser. Everything asserted here holds whatever the prices are.
+//
+// What is still pinned: a known model resolves, a known model costs something,
+// and the four buckets are combined the way the arithmetic says. A pricer that
+// returned a flat constant, or one that dropped the cache-write term, fails.
 func TestPricerCostArithmetic(t *testing.T) {
 	p := testPricer(t)
-	// A million input tokens at the published Gemini 2.5 Pro rate.
-	cost, ok := p.Cost("gemini-2.5-pro", 1_000_000, 0, 0, 0)
+
+	const model = "gemini-2.5-pro"
+	rates, ok := p.Resolve(model)
 	if !ok {
-		// Not a skip. models.json is a committed fixture, so a model the tests
-		// price going missing is a broken fixture rather than an environment to
-		// skip for: deleting the model from the dump turned this into a
-		// skip-then-pass, which reported success for a test that checked nothing.
-		t.Fatal("gemini-2.5-pro is not priced. models.json is committed, so a model " +
-			"the tests depend on going missing is a broken fixture, not an " +
-			"environment to skip for")
+		// Not a skip: models.json is a committed fixture, so a model the tests
+		// price going missing means the fixture is broken, and skipping turned
+		// that into a silent pass.
+		t.Fatalf("%s is not priced. models.json is committed, so a model the tests "+
+			"depend on going missing is a broken fixture, not an environment to skip for", model)
 	}
-	if cost < 1.20 || cost > 1.30 {
-		t.Errorf("1M input tokens of gemini-2.5-pro cost %v, want about 1.25", cost)
+
+	// A rate that resolves must be usable: a million tokens of anything cost
+	// something, or the model reads as free.
+	const perMillion = 1_000_000
+	if cost, priced := p.Cost(model, perMillion, 0, 0, 0); !priced || cost <= 0 {
+		t.Errorf("1M input tokens of %s cost %v (priced=%v), want a positive priced cost",
+			model, cost, priced)
 	}
+
+	// The four buckets add: a call using all four costs more than any one of them
+	// alone, and more than their inputs do summed. This catches a dropped term
+	// without depending on any single rate's value.
+	one := func(in, out, cacheRead, cacheWrite int) float64 {
+		cost, priced := p.Cost(model, in, out, cacheRead, cacheWrite)
+		if !priced {
+			t.Fatalf("%s stopped resolving partway through the arithmetic", model)
+		}
+		return cost
+	}
+	each := one(1000, 1000, 1000, 1000)
+	all := one(4000, 4000, 4000, 4000)
+	if all <= each {
+		t.Errorf("four times the tokens cost %v, four times one token set cost %v; "+
+			"the buckets are not being summed", all, each)
+	}
+	// Each bucket contributes positively: removing any one of them must lower the
+	// cost, which is what a term silently ignored by the pricer looks like.
+	for _, dropped := range []struct {
+		name                    string
+		in, out, cacheR, cacheW int
+	}{
+		{"input", 0, 1000, 1000, 1000},
+		{"output", 1000, 0, 1000, 1000},
+		{"cache read", 1000, 1000, 0, 1000},
+		{"cache write", 1000, 1000, 1000, 0},
+	} {
+		if got := one(dropped.in, dropped.out, dropped.cacheR, dropped.cacheW); got >= each {
+			t.Errorf("a call without its %s tokens cost %v, against %v for all four: "+
+				"that bucket is contributing nothing", dropped.name, got, each)
+		}
+	}
+
+	// The billing rate is per million tokens: a million of them must cost exactly
+	// the published rate, and a thousand exactly a thousandth of it. No dollar
+	// amount appears here, so a price change cannot break it.
+	if got := one(perMillion, 0, 0, 0); got != rates.Input {
+		t.Errorf("1M input tokens cost %v, want the published input rate %v", got, rates.Input)
+	}
+	if got := one(0, perMillion, 0, 0); got != rates.Output {
+		t.Errorf("1M output tokens cost %v, want the published output rate %v", got, rates.Output)
+	}
+}
+
+// TestPricerRatesHaveTheShapeTheirNamesClaim is the pricing-table invariant that
+// does not depend on any particular price.
+//
+// The four rates mean specific things: a cache read is cheaper than the input it
+// stands in for, an input is cheaper than the output it produces, and a cache
+// write costs more than a cache read. A table that got those backwards would
+// still produce plausible-looking costs — which is precisely why nothing
+// downstream notices.
+//
+// A model whose rates genuinely break one of these would be a bug in the vendor
+// data rather than in this code, so the failure message says so rather than
+// implying the parser is at fault.
+func TestPricerRatesHaveTheShapeTheirNamesClaim(t *testing.T) {
+	p := testPricer(t)
+	ids := liveModelIDs(t)
+
+	var cacheNotCheaper, outputNotDearer, writeNotDearer int
+	var priced int
+	for _, id := range ids {
+		rates, ok := p.Resolve(id)
+		if !ok {
+			continue
+		}
+		priced++
+		if rates.Input <= 0 || rates.Output <= 0 {
+			// A genuinely free model is possible; the catalogue says so and the
+			// fallback table above already checks for a confident $0.00.
+			continue
+		}
+		if rates.CacheRead > 0 && rates.CacheRead >= rates.Input {
+			cacheNotCheaper++
+		}
+		if rates.Output < rates.Input {
+			outputNotDearer++
+		}
+		if rates.CacheWrite > 0 && rates.CacheWrite <= rates.CacheRead {
+			writeNotDearer++
+		}
+	}
+	if priced == 0 {
+		t.Fatal("no model in models.json resolved, so these assertions are vacuous")
+	}
+	t.Logf("checked the rate shape of %d of %d catalogued models", priced, len(ids))
+	// Reported, not failed: the catalogue is vendor data and a handful of odd
+	// entries in it is a fact about the catalogue rather than a defect here. What
+	// this makes impossible is the pricer itself flattening two rates together.
+	if cacheNotCheaper > 0 {
+		t.Logf("%d of %d models price a cache read at or above the input rate; that is "+
+			"vendor data, and TestPricerBucketsAreNotFlattened is what checks our own "+
+			"arithmetic", cacheNotCheaper, priced)
+	}
+	if outputNotDearer > 0 {
+		t.Logf("%d of %d models price output below input", outputNotDearer, priced)
+	}
+	if writeNotDearer > 0 {
+		t.Logf("%d of %d models price a cache write at or below a cache read",
+			writeNotDearer, priced)
+	}
+}
+
+// TestPricerBucketsAreNotFlattened is the version of the above that can fail.
+//
+// It does not ask what the catalogue contains — that is vendor data, reported
+// above — but whether *this pricer* distinguishes the buckets it was given.
+// Dropping the cache-read rate onto the input rate, or the output rate onto the
+// input rate, is a bug in Cost() and Resolve() and it makes every cached session
+// bill at the input price: a number that looks plausible and is wrong by a factor
+// of ten on the largest bucket on the page.
+func TestPricerBucketsAreNotFlattened(t *testing.T) {
+	p := testPricer(t)
+
+	var checked int
+	for _, id := range liveModelIDs(t) {
+		rates, ok := p.Resolve(id)
+		if !ok || rates.Input <= 0 || rates.Output <= 0 {
+			continue
+		}
+		checked++
+		const perMillion = 1_000_000
+		gotIn, _ := p.Cost(id, perMillion, 0, 0, 0)
+		gotOut, _ := p.Cost(id, 0, perMillion, 0, 0)
+		if gotIn == gotOut && rates.Input != rates.Output {
+			t.Errorf("%s: a million input tokens and a million output tokens both cost "+
+				"%v, though its rates are %v and %v: the pricer is not using the rate "+
+				"for the bucket it was given", id, gotIn, rates.Input, rates.Output)
+		}
+		gotCache, _ := p.Cost(id, 0, 0, perMillion, 0)
+		if rates.CacheRead != 0 && gotCache == gotIn && rates.CacheRead != rates.Input {
+			t.Errorf("%s: a million cache-read tokens cost the same %v as a million "+
+				"input tokens, though its rates are %v and %v", id, gotCache,
+				rates.CacheRead, rates.Input)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no model with both a non-zero input and output rate resolved")
+	}
+}
+
+// TestPricerBillsReasoningAtTheOutputRate is the other billing relationship the
+// dashboard depends on.
+//
+// Several agents report thinking inside the generated output count rather than
+// beside it, so the pricer is handed the whole generated figure and has to bill
+// all of it at the output rate. Priced at the input rate — or dropped — a
+// thinking-heavy session costs a fraction of what it cost, and every downstream
+// figure still looks plausible.
+//
+// The check is relational so it survives a price change: for any model whose
+// output rate exceeds its input rate, the same number of generated tokens must
+// cost strictly more as output than as input, and must equal the output rate
+// exactly.
+func TestPricerBillsReasoningAtTheOutputRate(t *testing.T) {
+	p := testPricer(t)
+
+	var checked int
+	for _, id := range liveModelIDs(t) {
+		rates, ok := p.Resolve(id)
+		if !ok || rates.Output <= rates.Input || rates.Input <= 0 {
+			continue
+		}
+		checked++
+		const perMillion = 1_000_000
+		asOutput, _ := p.Cost(id, 0, perMillion, 0, 0)
+		asInput, _ := p.Cost(id, perMillion, 0, 0, 0)
+
+		// The generated count is billed at the output rate. This is the assertion
+		// that fails if reasoning is billed as input or ignored: both would give a
+		// number below the output rate, and the two cannot be told apart by cost
+		// alone, so the exact-rate check below is what distinguishes them.
+		if want := perMillion / 1e6 * rates.Output; asOutput != want {
+			t.Fatalf("%s: a million generated tokens billed %v, want %v at the output "+
+				"rate %v: thinking is billed as output, so anything else is a fraction "+
+				"of the real cost", id, asOutput, want, rates.Output)
+		}
+		if asOutput <= asInput {
+			t.Errorf("%s: a million generated tokens billed %v, no more than the same "+
+				"count as input (%v), though its output rate %v exceeds its input rate "+
+				"%v", id, asOutput, asInput, rates.Output, rates.Input)
+		}
+	}
+	if checked == 0 {
+		// Not a skip: a pricer whose Resolve returned one flat rate for everything
+		// would leave nothing to compare, and that is exactly the defect above.
+		t.Fatal("no catalogued model has an output rate above its input rate, so there " +
+			"is nothing to check that reasoning is billed as output")
+	}
+	t.Logf("checked the generated-count rate for %d models", checked)
 }
 
 // TestPricerCachesResolution covers the cache rather than the arithmetic.

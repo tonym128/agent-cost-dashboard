@@ -132,11 +132,45 @@ func TestAgainstPythonReference(t *testing.T) {
 			if tot.reasoning != want.Reasoning {
 				t.Errorf("reasoning %d, python %d", tot.reasoning, want.Reasoning)
 			}
-			// A cent is the rounding the dashboard itself displays at, so this is
-			// tight enough to catch a wrong rate and loose enough to survive a
-			// pricing table gaining a digit.
-			if diff := tot.cost - want.Cost; diff < -0.01 || diff > 0.01 {
-				t.Errorf("cost $%.4f, python $%.4f", tot.cost, want.Cost)
+			// The dollar total is checked as a relationship, not as an amount.
+			//
+			// It used to be compared against Python's own figure with a one-cent
+			// tolerance, which is a claim about two price tables rather than about
+			// this parser: models.json is rewritten by update_models.py, so a
+			// vendor price change moved the Go figure and broke a test about
+			// reading a protobuf. Python's own figure was computed from whatever
+			// table it loaded at the time, so it cannot be reproduced exactly by a
+			// different table at all.
+			//
+			// What must hold is that the cost is the token totals above priced at
+			// the rates this pricer resolves, with the whole generated count — not
+			// the itemised remainder — billed as output. That is the same assertion
+			// the per-call test makes, aggregated over the conversation.
+			rates, ok := pricer.Resolve(sw.Calls[0].Model)
+			if !ok {
+				t.Fatalf("%s is unpriced, so the cost cannot be checked", sw.Calls[0].Model)
+			}
+			wantCost := float64(tot.input)/1e6*rates.Input +
+				float64(tot.output+tot.reasoning)/1e6*rates.Output +
+				float64(tot.cacheRead)/1e6*rates.CacheRead
+			if diff := tot.cost - wantCost; diff > 1e-9 || diff < -1e-9 {
+				t.Errorf("cost $%.8f, want $%.8f from the token totals priced at %v; the "+
+					"whole generated count is billed as output", tot.cost, wantCost, rates)
+			}
+			// Python's figure is still checked, loosely and for a reason: it is a
+			// different price table, so it cannot be matched exactly, but a
+			// conversation of this size cannot plausibly cost a different order of
+			// magnitude. A factor of ten is a bug somewhere; a per-cent drift is a
+			// price change.
+			if want.Cost > 0 {
+				ratio := tot.cost / want.Cost
+				if ratio < 0.1 || ratio > 10 {
+					t.Errorf("cost $%.6f against python's $%.6f, a factor of %.2f: that is "+
+						"a different order of magnitude, not a price-table drift",
+						tot.cost, want.Cost, ratio)
+				}
+				t.Logf("cost $%.6f against python's $%.6f (factor %.3f, the two price "+
+					"tables differ)", tot.cost, want.Cost, ratio)
 			}
 
 			// Every call must be priced. A conversation priced as unknown reads as
