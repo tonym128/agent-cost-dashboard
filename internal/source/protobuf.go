@@ -39,6 +39,13 @@ func ProtoDecode(data []byte) []PBField {
 		i = next
 		fieldNum := int32(key >> 3)
 		wire := int(key & 7)
+		// Protobuf field numbers start at 1. A key decoding to 0 or a negative
+		// number is not a field at all, and reporting one would index a map under
+		// a key nothing can ask for, so the scan stops here as it does for any
+		// other malformed construct.
+		if fieldNum < 1 {
+			return out
+		}
 
 		switch wire {
 		case 0:
@@ -100,6 +107,9 @@ func ProtoField(data []byte, fieldNum int32, wire int) (PBField, bool) {
 		i = next
 		fn := int32(key >> 3)
 		wt := int(key & 7)
+		if fn < 1 {
+			return PBField{}, false
+		}
 
 		switch wt {
 		case 2:
@@ -201,7 +211,10 @@ func readVarint(data []byte, i, n int) (uint64, int, bool) {
 	var value uint64
 	var shift uint
 	for read := 0; read < maxVarintBytes; read++ {
-		if i >= n {
+		// i < 0 as well as i >= n: callers add decoded lengths to the cursor, so a
+		// hostile one can leave it before the start of the slice, and an upper
+		// bound alone does not catch that.
+		if i < 0 || i >= n {
 			return 0, i, false
 		}
 		b := data[i]
@@ -241,6 +254,15 @@ func skipGroup(data []byte, i, n int) int {
 		case 2:
 			length, next, ok := readVarint(data, i, n)
 			if !ok {
+				return n
+			}
+			// The length has to be checked against what is left before it is used
+			// as a position. Added blindly it is not a position at all: a length
+			// above the maximum int made the cursor negative, and the loop
+			// condition below — which only tests i < n — then let a negative index
+			// through to data[i]. A length running past the end is truncation, so
+			// treating it as one is also the right answer.
+			if length > uint64(n-next) {
 				return n
 			}
 			i = next + int(length)
