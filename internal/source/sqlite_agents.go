@@ -182,6 +182,15 @@ func (p *AntigravityParser) consumeStep(b *sessionBuilder, idx int64, stepType, 
 			return
 		}
 		u := ProtoVarints(usageBlob)
+		if len(u) == 0 {
+			// The usage sub-message decoded to no fields at all: a varint that
+			// never terminates, or a body truncated inside its own declared
+			// length. That is a corrupt blob rather than a call that spent
+			// nothing, and it must not become a row — a zero-token call would
+			// pad the call count with a call that never happened. This is the
+			// same truncation the length check above handles, one level down.
+			return
+		}
 
 		modelID := int32(u[agyUsageModel])
 		modelName, known := agyModelNames[modelID]

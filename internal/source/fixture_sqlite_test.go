@@ -155,6 +155,10 @@ func partID(messageID string, i int) string {
 // ---------------------------------------------------------------- Antigravity
 
 type antigravityFixture struct {
+	// Comment records where the fixture came from. The reference test reads it,
+	// so the provenance travels with the numbers instead of living in a commit
+	// message nobody reading the test will see.
+	Comment   string `json:"comment"`
 	Workspace string `json:"workspace"`
 	Epoch     int64  `json:"epoch"`
 	Steps     []struct {
