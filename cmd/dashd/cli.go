@@ -40,6 +40,7 @@ type options struct {
 	// authentication", not "authentication with an empty secret".
 	authToken string
 	verbose   bool
+	showVer   bool
 }
 
 // newFlagSet builds the flag set. It is separate so that both parseArgs and
@@ -63,6 +64,7 @@ func newFlagSet(o *options, out io.Writer) *flag.FlagSet {
 	fs.StringVar(&o.authToken, "auth-token", "",
 		"require this bearer token (Authorization: Bearer, or X-Auth-Token); empty disables authentication")
 	fs.BoolVar(&o.verbose, "verbose", false, "log every request and scan detail")
+	fs.BoolVar(&o.showVer, "version", false, "print the version, commit and build date, then exit")
 	return fs
 }
 

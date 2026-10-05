@@ -66,6 +66,9 @@ func TestParseArgs(t *testing.T) {
 		{name: "auth-token after the command", argv: []string{"serve", "-auth-token", "s3cret"}, wantCmd: "serve", wantAuth: "s3cret"},
 		{name: "empty auth-token means off", argv: []string{"-auth-token", "", "serve"}, wantCmd: "serve", wantAuth: ""},
 
+		{name: "version flag", argv: []string{"-version"}, wantCmd: defaultCommand},
+		{name: "version flag after a command", argv: []string{"serve", "-version"}, wantCmd: "serve"},
+
 		{name: "typo is an error, not a silent server", argv: []string{"stat"}, wantErr: `unknown command "stat"`},
 		{name: "typo after flags is still an error", argv: []string{"-verbose", "scean"}, wantErr: `unknown command "scean"`},
 		{name: "a path is not a command", argv: []string{"/usr/local/bin/dashd"}, wantErr: "unknown command"},
@@ -180,7 +183,7 @@ func TestPrintUsageMentionsEverything(t *testing.T) {
 			t.Errorf("usage does not document command %q", c)
 		}
 	}
-	for _, f := range []string{"-db", "-addr", "-interval", "-home", "-models", "-opencode", "-verbose", "-auth-token"} {
+	for _, f := range []string{"-db", "-addr", "-interval", "-home", "-models", "-opencode", "-verbose", "-auth-token", "-version"} {
 		if !strings.Contains(got, f) {
 			t.Errorf("usage does not document flag %q", f)
 		}

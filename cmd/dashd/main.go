@@ -49,6 +49,11 @@ func runCLI(argv []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	if o.showVer {
+		fmt.Fprintln(stdout, versionString())
+		return 0
+	}
+
 	if err := run(o, command, stdout); err != nil {
 		fmt.Fprintln(stderr, "dashd:", err)
 		return 1
@@ -62,6 +67,7 @@ func run(o options, command string, stdout io.Writer) error {
 		level = slog.LevelDebug
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	log.Info("starting", "version", version, "commit", commit, "date", date, "command", command)
 	if o.opencode == "" {
 		o.opencode = filepath.Join(o.home, ".local/share/opencode/opencode.db")
 	}
@@ -150,6 +156,7 @@ func run(o options, command string, stdout io.Writer) error {
 	}
 	log.Info("serving",
 		"url", "http://"+ln.Addr().String(),
+		"version", version,
 		"db", o.db,
 		"scanning", command == "serve-and-scan",
 		"auth", o.authToken != "",
