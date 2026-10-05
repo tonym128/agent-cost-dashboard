@@ -529,21 +529,31 @@ func consumeCodex(b *sessionBuilder, rec record, ctx *parseCtx) error {
 		return nil
 	}
 
+	// The baseline this event is differenced against, captured before the
+	// running total is replaced below. Reading b.prevTotals from inside the
+	// closure instead would read the total already stored there and difference
+	// it against itself, so every increment came out as zero.
+	prevTotals := b.prevTotals
+
 	// Prefer the explicit per-call block; otherwise difference the running
 	// total against the previous one.
+	//
+	// A decrease means the counter was reset rather than that a call was
+	// refunded. The increment is unknown, not negative, so this event
+	// contributes nothing: reporting the new total in full would double count
+	// everything before the reset, and reporting a negative figure would be
+	// worse than reporting none.
 	delta := func(key string) int64 {
 		if v := num(last, key); v > 0 {
 			return v
 		}
-		prev := num(b.prevTotals, key)
-		cur := num(total, key)
-		d := cur - prev
+		d := num(total, key) - num(prevTotals, key)
 		if d < 0 {
 			return 0
 		}
 		return d
 	}
-	if len(b.prevTotals) == 0 {
+	if len(prevTotals) == 0 {
 		if len(last) == 0 {
 			b.prevTotals = total
 			return nil
