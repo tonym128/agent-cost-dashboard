@@ -1081,10 +1081,8 @@ func TestScanOpenCodeIngestsAndThenSkipsUnchangedSessions(t *testing.T) {
 	// every call already stored for the session. That is the same failure the
 	// file path guards against in ingest(), and it is not guarded here.
 	//
-	// KNOWN RED on this branch: scanOpenCode calls ReplaceSession for every
-	// session, so a resumed OpenCode session loses its history. scan.go is a file
-	// this branch may edit only for the export in finding 11, so this is reported
-	// rather than fixed; see the report for the change.
+	// scanOpenCode now appends once a session has a non-zero stored cursor, the
+	// same rule ingest() applies to the file sources.
 	if err := appendOpenCodeMessage(t, path, "ses_top0000000001", 1779977000000); err != nil {
 		t.Fatal(err)
 	}

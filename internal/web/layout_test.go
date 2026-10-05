@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -741,20 +742,32 @@ func TestBurnDeltaClassesAreDistinguishable(t *testing.T) {
 func filterPrefillScript(t *testing.T) string {
 	t.Helper()
 	page := readAsset(t, templateFS, "templates/index.html")
-	i := strings.LastIndex(page, "<script>")
-	if i < 0 {
+	// The opening tag carries the CSP nonce, so matching a bare "<script>" no
+	// longer finds anything. The nonce is not incidental: an inline script
+	// without one is blocked by the policy, and security_headers_test.go
+	// asserts that separately. So the tag is matched with its attributes and
+	// required to have one.
+	last := ""
+	for _, m := range inlineScriptRe.FindAllStringSubmatch(page, -1) {
+		if strings.Contains(m[1], "src=") {
+			continue // the external dashboard.js, not an inline block
+		}
+		if !strings.Contains(m[1], "nonce=") {
+			t.Fatalf("an inline script has no CSP nonce and will be blocked:\n%s", m[0])
+		}
+		last = m[2]
+	}
+	if last == "" {
 		t.Fatal("the template has no inline script block")
 	}
-	rest := page[i+len("<script>"):]
-	j := strings.Index(rest, "</script>")
-	if j < 0 {
-		t.Fatal("the template's inline script is not closed")
+	if !strings.Contains(last, "filterState") {
+		t.Fatalf("the last inline script is not the filter prefill:\n%s", last)
 	}
-	if !strings.Contains(rest[:j], "filterState") {
-		t.Fatalf("the last inline script is not the filter prefill:\n%s", rest[:j])
-	}
-	return rest[:j]
+	return last
 }
+
+// inlineScriptRe matches an opening script tag, its attributes, and its body.
+var inlineScriptRe = regexp.MustCompile(`(?s)<script([^>]*)>(.*?)</script>`)
 
 // TestFilterFormIsPrefilledFromTheQueryString replaces the old "dashboard.js does
 // not mention filter-model/filter-agent/filter-apply" grep, which could not fail

@@ -279,7 +279,14 @@ func parseInt64(s string) (int64, error) {
 		if r < '0' || r > '9' {
 			return 0, fmt.Errorf("not an integer: %q", s)
 		}
-		n = n*10 + int64(r-'0')
+		// Bound the accumulator before it wraps: a silent wrap turns
+		// "9223372036854775808" into MinInt64, and a wrapped epoch is still a
+		// plausible date, so the corruption survives into the report.
+		d := int64(r - '0')
+		if n > (1<<63-1-d)/10 {
+			return 0, fmt.Errorf("integer overflow: %q", s)
+		}
+		n = n*10 + d
 	}
 	if neg {
 		n = -n

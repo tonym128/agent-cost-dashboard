@@ -53,16 +53,63 @@ function escapeHTML(s) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// A listener registry, so a delegated document-level click handler can actually
+// be registered and removed rather than being a no-op that hides wiring.
+function listeners(target) {
+  if (!target.__listeners) target.__listeners = new Map();
+  return target.__listeners;
+}
+
+function addListener(target, type, fn) {
+  const byType = listeners(target);
+  if (!byType.has(type)) byType.set(type, []);
+  byType.get(type).push(fn);
+}
+
+function removeListener(target, type, fn) {
+  const byType = listeners(target);
+  const fns = byType.get(type);
+  if (!fns) return;
+  const i = fns.indexOf(fn);
+  if (i >= 0) fns.splice(i, 1);
+}
+
+// matches answers the selector forms the shipped script actually uses:
+// attribute presence ([data-copy-resume]), class (.sort-icon) and tag. Anything
+// else returns false rather than throwing, so a selector the stub cannot model
+// behaves like a selector that matched nothing.
+function matches(el, selector) {
+  const sel = String(selector).trim();
+  const attr = /^\[([a-zA-Z0-9_-]+)\]$/.exec(sel);
+  if (attr) {
+    const name = attr[1];
+    if (name.startsWith('data-')) {
+      const key = name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      return Object.prototype.hasOwnProperty.call(el.dataset, key) && el.dataset[key] !== undefined;
+    }
+    return el.getAttribute(name) !== null;
+  }
+  if (sel.startsWith('.')) return (el.className || '').split(/\s+/).includes(sel.slice(1));
+  if (sel.startsWith('#')) return el.id === sel.slice(1);
+  return el.tagName === sel.toUpperCase();
+}
+
 function makeElement(id) {
-  return {
+  const el = {
     id, tagName: 'DIV', innerHTML: '', textContent: '', value: '', title: '',
     className: '', disabled: false, style: {}, dataset: {}, options: [],
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     setAttribute() {}, getAttribute() { return null; }, removeAttribute() {},
-    addEventListener() {}, removeEventListener() {},
     querySelector() { return null; }, querySelectorAll() { return []; },
     appendChild() {}, removeChild() {}, select() {}, focus() {},
   };
+  el.addEventListener = (type, fn) => addListener(el, type, fn);
+  el.removeEventListener = (type, fn) => removeListener(el, type, fn);
+  // closest walks up from the event target. The stub has no tree, so an element
+  // matches only itself, which is what the delegation in setupDelegatedActions
+  // needs: the target it is handed is the button itself.
+  el.closest = selector => (matches(el, selector) ? el : null);
+  return el;
 }
 
 const elements = new Map();
@@ -77,6 +124,11 @@ const document = {
   },
   querySelector() { return null; },
   querySelectorAll() { return []; },
+  // The script registers its clickable-cell delegation on the document. The stub
+  // records the handler so the wiring is exercised at load; a test body that
+  // wants the behaviour can reach it through sandbox.dispatch('click', target).
+  addEventListener(type, fn) { addListener(document, type, fn); },
+  removeEventListener(type, fn) { removeListener(document, type, fn); },
   createElement(tag) {
     let text = '';
     return {
@@ -90,7 +142,16 @@ const document = {
     };
   },
   body: makeElement('body'),
+  execCommand() { return true; },
 };
+
+// dispatch fires the document-level handlers of one type at target, as a click
+// on target would. Exposed so a test body can drive the delegation without
+// reimplementing it.
+function dispatch(type, target) {
+  const fns = listeners(document).get(type) || [];
+  return fns.map(fn => fn({type, target, preventDefault() {}, stopPropagation() {}}));
+}
 
 const sandbox = {
   console,
@@ -117,6 +178,7 @@ sandbox.window.document = document;
 // it did not write — the prefill script marks options, and there is nothing to
 // mark on an element with none.
 sandbox.elements = elements;
+sandbox.dispatch = dispatch;
 vm.createContext(sandbox);
 
 // A browser exposes location on the global object as well as on window, and the

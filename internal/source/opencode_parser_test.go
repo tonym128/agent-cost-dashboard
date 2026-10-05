@@ -94,10 +94,19 @@ func TestOpenCodeSessionRowsBecomeCalls(t *testing.T) {
 		t.Errorf("cache write = %d, want 1200", c.CacheWriteTokens)
 	}
 
-	// Totals reconcile: the call is the sum of its own buckets, and nothing
-	// else is folded in.
-	if want := c.InputTokens + c.OutputTokens + c.CacheReadTokens + c.CacheWriteTokens; c.TotalTokens != want {
-		t.Errorf("total = %d, want the sum of the buckets %d", c.TotalTokens, want)
+	// Totals reconcile: the call is the sum of all five of its buckets, and
+	// nothing else is folded in. Reasoning is included — OpenCode's own `total`
+	// on this message is 49305, which is input+output+reasoning+both cache
+	// buckets, and excluding it understated throughput by about 3.8%. (The
+	// "four buckets" in the comment above describes what the log *stores*
+	// without reasoning folded into output; the total still counts it.)
+	want := c.InputTokens + c.OutputTokens + c.ReasoningTokens +
+		c.CacheReadTokens + c.CacheWriteTokens
+	if c.TotalTokens != want {
+		t.Errorf("total = %d, want the sum of the five buckets %d", c.TotalTokens, want)
+	}
+	if c.TotalTokens != 49305 {
+		t.Errorf("total = %d, want the total the log itself reports, 49305", c.TotalTokens)
 	}
 
 	// The cost comes from the pricer, and it must reflect that 18000 tokens were

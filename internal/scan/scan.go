@@ -351,7 +351,17 @@ func (s *Scanner) scanOpenCode(ctx context.Context, states map[string]model.Scan
 			continue
 		}
 		changed++
-		if err := s.cfg.Store.ReplaceSession(sess); err != nil {
+		// The parse above resumed past the stored cursor and returned only the
+		// new rows, so a replacement commit would delete every call already
+		// stored for this session. Only a first read — the one at a zero
+		// cursor, which saw the whole session — may be committed as a
+		// replacement. This is the same append-versus-replace rule ingest()
+		// applies to the file sources, from the same evidence.
+		commit := s.cfg.Store.AppendSession
+		if prev[id].Offset == 0 {
+			commit = s.cfg.Store.ReplaceSession
+		}
+		if err := commit(sess); err != nil {
 			return seen, changed, ingested, err
 		}
 		if err := s.cfg.Store.RecomputeSession(sess.UID); err != nil {
