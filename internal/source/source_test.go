@@ -99,14 +99,58 @@ func TestPricerCostArithmetic(t *testing.T) {
 	}
 }
 
+// TestPricerCachesResolution covers the cache rather than the arithmetic.
+//
+// The previous version captured cacheLen() after the first resolve and asserted
+// it did not grow across two more — which passed with the cache deleted
+// altogether, because cacheLen() is stably 0 and 0 != 0 is false. So the first
+// assertion is that the cache is populated at all.
 func TestPricerCachesResolution(t *testing.T) {
 	p := testPricer(t)
+
+	if got := p.cacheLen(); got != 0 {
+		t.Fatalf("a freshly built pricer already holds %d cached resolutions", got)
+	}
 	p.Resolve("gemini-2.5-flash")
+	after := p.cacheLen()
+	if after == 0 {
+		t.Fatal("resolving a model cached nothing: the resolution was not memoised, so " +
+			"every call re-scans the catalogue")
+	}
+
+	// The same model again must be served from the cache rather than added to it.
+	for i := 0; i < 3; i++ {
+		p.Resolve("gemini-2.5-flash")
+	}
+	if got := p.cacheLen(); got != after {
+		t.Errorf("resolving the same model three more times grew the cache from %d to %d: "+
+			"the lookup is not hitting what the first resolve stored", after, got)
+	}
+
+	// Two spellings of one model. The cache is keyed on the raw string, so this
+	// adds an entry; the resolution is the same either way, so this is reported
+	// rather than asserted — normalising the key would be a change to
+	// Resolve(), and this file does not own it. What matters and is asserted is
+	// that both spellings resolve to the same rates.
 	before := p.cacheLen()
-	p.Resolve("gemini-2.5-flash")
-	p.Resolve("gemini-2.5-flash")
-	if p.cacheLen() != before {
-		t.Errorf("resolution is not memoised: cache grew from %d", before)
+	p.Resolve("google/gemini-2.5-flash")
+	spelled, okSpelled := p.Resolve("gemini-2.5-flash")
+	plain, okPlain := p.Resolve("gemini-2.5-flash")
+	if !okSpelled || !okPlain || spelled != plain {
+		t.Errorf("a vendor-prefixed id resolved to %v/%v and the bare id to %v/%v; both "+
+			"spellings of one model must reach the same rates", spelled, okSpelled, plain, okPlain)
+	}
+	if grown := p.cacheLen() - before; grown > 1 {
+		t.Errorf("two extra resolves added %d cache entries; resolution is memoised per "+
+			"id, so at most one new id should have been added", grown)
+	}
+
+	// And a genuinely new model does add one entry, or the cache above is not
+	// tracking resolutions at all.
+	p.Resolve("claude-opus-4-8")
+	if got := p.cacheLen(); got <= after {
+		t.Errorf("resolving a second model left the cache at %d; the earlier assertions "+
+			"would pass against a cache that never grows", got)
 	}
 }
 
