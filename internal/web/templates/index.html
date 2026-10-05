@@ -1,0 +1,372 @@
+{{define "index.html"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Cost Dashboard</title>
+<link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+<body>
+<div class="container">
+  <header class="page-header">
+    <h1>Agent Cost Dashboard</h1>
+    <p class="subtitle">
+      Generated on {{.Generated}} &middot;
+      <a href="#" onclick="location.reload()">Refresh for latest</a>
+    </p>
+    <p class="scan-status" title="{{.ScanSummary}}">{{.ScanSummary}}</p>
+  </header>
+
+  <div class="filter-bar">
+    <form method="get" action="/">
+      <div class="filter-group">
+        <label for="model">Model</label>
+        <select name="model" id="model" multiple size="6">
+          {{range .Facets.Models}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="agent">Program</label>
+        <select name="agent" id="agent" multiple size="6">
+          {{range .Facets.Agents}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="project">Project</label>
+        <select name="project" id="project" multiple size="6">
+          {{range .Facets.Projects}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="date_from">Date from</label>
+        <input type="date" name="date_from" id="date_from" min="{{.Facets.MinDate}}" max="{{.Facets.MaxDate}}">
+      </div>
+      <div class="filter-group">
+        <label for="date_to">Date to</label>
+        <input type="date" name="date_to" id="date_to" min="{{.Facets.MinDate}}" max="{{.Facets.MaxDate}}">
+      </div>
+      <div class="filter-actions">
+        <button type="submit">Apply</button>
+        <a href="/" class="clear-link">Clear</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="stats-grid">
+    {{range .StatCards}}
+    <div class="stat-card{{if .Wide}} token-card{{end}}">
+      <div class="label">{{.Label}}</div>
+      <div class="value {{.Class}}">{{.Value}}</div>
+      {{if .Detail}}
+      <div class="{{.DetailClass}}">
+        {{range .Detail}}<div><span>{{.Label}}</span><strong>{{.Value}}</strong></div>{{end}}
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <span>Activity &amp; Throughput</span>
+      <span class="badge" id="activity-window-badge"></span>
+    </div>
+    <div class="activity-controls">
+      <div class="filter-group">
+        <label for="activity-range">Window</label>
+        <select id="activity-range">
+          <option value="3600">Last hour</option>
+          <option value="10800">Last 3 hours</option>
+          <option value="21600">Last 6 hours</option>
+          <option value="43200">Last 12 hours</option>
+          <option value="86400" selected>Last 24 hours</option>
+          <option value="259200">Last 3 days</option>
+          <option value="604800">Last 7 days</option>
+          <option value="2592000">Last 30 days</option>
+          <option value="7776000">Last 90 days</option>
+          <option value="0">All time</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="activity-metric">Metric</label>
+        <select id="activity-metric">
+          <option value="messages">Messages sent</option>
+          <option value="outputTokens">Output tokens</option>
+          <option value="totalTokens">Total tokens</option>
+          <option value="throughput">Throughput (tok/s)</option>
+          <option value="latency">Response time</option>
+          <option value="cost">Cost</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="activity-step">Resolution</label>
+        <select id="activity-step">
+          <option value="auto" selected>Auto</option>
+          <option value="300">5 min</option>
+          <option value="900">15 min</option>
+          <option value="3600">Hourly</option>
+          <option value="86400">Daily</option>
+        </select>
+      </div>
+    </div>
+    <p class="activity-note">
+      Every call is stored, so this reaches back as far as your logs did &mdash;
+      a window here is not limited to what is still on disk.
+    </p>
+    <div class="activity-summary" id="activity-summary"></div>
+    <div class="activity-chart" id="activity-chart"></div>
+    <div class="activity-table-wrap">
+      <table id="activity-table">
+        <thead>
+          <tr>
+            <th>Window</th>
+            <th class="numeric">Messages</th>
+            <th class="numeric">Output</th>
+            <th class="numeric">Input</th>
+            <th class="numeric">Total</th>
+            <th class="numeric">Throughput</th>
+            <th class="numeric">Avg response</th>
+            <th class="numeric">LLM time</th>
+            <th class="numeric">Cost</th>
+          </tr>
+        </thead>
+        <tbody id="activity-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>Daily Spending</span></div>
+    <div class="daily-chart" id="daily-chart-content"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <span>All Sessions</span>
+      <span class="badge" id="sessions-count"></span>
+    </div>
+    <div class="table-toolbar">
+      <input type="search" id="sessions-search" class="table-search"
+             placeholder="Filter by project, path, or agent&hellip;"
+             aria-label="Filter sessions">
+      <span class="table-count" id="sessions-shown"></span>
+      <div class="pager">
+        <button id="sessions-prev" type="button">&larr; Newer</button>
+        <button id="sessions-next" type="button">Older &rarr;</button>
+      </div>
+    </div>
+    <table id="sessions-table">
+      <thead>
+        <tr>
+          <th>Project / Session</th>
+          <th>Date</th>
+          <th>Duration</th>
+          <th>LLM Time</th>
+          <th>Tool Time</th>
+          <th>Tokens/s</th>
+          <th>Messages</th>
+          <th>Tokens</th>
+          <th>Cost</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="sessions-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>Models</span></div>
+    <table id="models-table">
+      <thead>
+        <tr>
+          <th>Model</th><th>Messages</th><th>Total Tokens</th>
+          <th>Cache Read</th><th>Cache Write</th><th>Output</th>
+          <th>Reasoning</th><th>Tokens/s</th><th>Cost</th><th>Share</th>
+        </tr>
+      </thead>
+      <tbody id="models-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>Tool Usage</span></div>
+    <table id="tools-table">
+      <thead>
+        <tr><th>Tool</th><th>Calls</th><th>Total Time</th><th>Errors</th><th>Associated Cost</th></tr>
+      </thead>
+      <tbody id="tools-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>Projects</span></div>
+    <table id="projects-table">
+      <thead>
+        <tr><th>Project</th><th>Sessions</th><th>Messages</th><th>Cost</th><th>Last Activity</th></tr>
+      </thead>
+      <tbody id="projects-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>Scanner</span></div>
+    <table id="scan-table">
+      <thead>
+        <tr><th>Source</th><th>Last pass</th><th>Files seen</th><th>Files changed</th><th>Calls added</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        {{range .Scan}}
+        <tr>
+          <td>{{.Agent}}</td>
+          <td>{{.LastScanAgo}}</td>
+          <td class="numeric">{{.FilesSeen}}</td>
+          <td class="numeric">{{.FilesChanged}}</td>
+          <td class="numeric">{{.CallsAdded}}</td>
+          <td>{{if .Error}}<span class="scan-error">{{.Error}}</span>{{else}}ok{{end}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">The scanner has not run yet.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <footer class="refresh-note">
+    Costs are priced from each agent's reported usage, falling back to published
+    list prices. Every call is stored in SQLite, so history outlives the logs it
+    came from.
+  </footer>
+</div>
+
+<script>window.dashboardData = {{.PayloadJSON}};</script>
+<script>window.filterState = {
+  models: {{jsonList .FilterState.Models}},
+  agents: {{jsonList .FilterState.Agents}},
+  projects: {{jsonList .FilterState.Projects}}
+};</script>
+<script src="/assets/dashboard.js"></script>
+<script>
+(function() {
+  // Prefill the filter form from the query, so a reload or a shared link shows
+  // the same view rather than an empty form over filtered data.
+  var s = window.filterState;
+  function mark(select, values) {
+    for (var i = 0; i < select.options.length; i++) {
+      select.options[i].selected = values.indexOf(select.options[i].value) !== -1;
+    }
+  }
+  var q = new URLSearchParams(location.search);
+  var m = document.getElementById('model');
+  var a = document.getElementById('agent');
+  var p = document.getElementById('project');
+  if (m) mark(m, s.models);
+  if (a) mark(a, s.agents);
+  if (p) mark(p, s.projects);
+  if (q.get('date_from')) document.getElementById('date_from').value = q.get('date_from');
+  if (q.get('date_to')) document.getElementById('date_to').value = q.get('date_to');
+})();
+</script>
+</body>
+</html>
+{{end}}
+
+{{define "error.html"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+<body>
+<div class="container">
+  <div class="section" style="margin-top:40px">
+    <div class="section-header"><span>{{.Code}} &middot; {{.Title}}</span></div>
+    <div class="content" style="padding:16px">
+      <p>{{.Error}}</p>
+      <p style="margin-top:12px"><a href="/">&larr; Back to dashboard</a></p>
+    </div>
+  </div>
+</div>
+</body>
+</html>
+{{end}}
+
+{{define "session.html"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session {{.Session.UID}}</title>
+<link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+<body>
+<div class="container">
+  <header class="page-header">
+    <p class="subtitle"><a href="/">&larr; Back to dashboard</a></p>
+    <h1>{{if .Session.Title}}{{.Session.Title}}{{else}}Session{{end}}</h1>
+    <p class="subtitle">
+      {{.Session.Agent}} &middot; {{.Session.Project}} &middot;
+      generated {{.Generated}}
+    </p>
+  </header>
+
+  <div class="stats-grid">
+    <div class="stat-card"><div class="stat-label">Calls</div><div class="stat-value">{{.Session.Calls}}</div></div>
+    <div class="stat-card"><div class="stat-label">Tokens</div><div class="stat-value">{{.Session.Tokens}}</div></div>
+    <div class="stat-card"><div class="stat-label">Cost</div><div class="stat-value cost">{{.Session.Cost}}</div></div>
+    <div class="stat-card"><div class="stat-label">LLM time</div><div class="stat-value">{{.Session.LLMTime}}</div></div>
+    <div class="stat-card"><div class="stat-label">Tool time</div><div class="stat-value">{{.Session.ToolTime}}</div></div>
+    <div class="stat-card"><div class="stat-label">Wall time</div><div class="stat-value">{{.Session.Wall}}</div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <span>Calls</span>
+      <span class="badge">{{.Session.First}} &rarr; {{.Session.Last}}</span>
+    </div>
+    <table id="session-calls-table">
+      <thead>
+        <tr>
+          <th>Time</th><th>Model</th><th class="numeric">Input</th>
+          <th class="numeric">Output</th><th class="numeric">Cache read</th>
+          <th class="numeric">Cache write</th><th class="numeric">Reasoning</th>
+          <th class="numeric">Total</th><th class="numeric">LLM time</th>
+          <th class="numeric">Cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Calls}}
+        <tr>
+          <td>{{.Time}}</td>
+          <td>{{.Model}}{{if not .Priced}} <span class="scan-error" title="no rate found for this model">unpriced</span>{{end}}</td>
+          <td class="numeric">{{.Input}}</td>
+          <td class="numeric">{{.Output}}</td>
+          <td class="numeric">{{.CacheRead}}</td>
+          <td class="numeric">{{.CacheWrite}}</td>
+          <td class="numeric">{{.Reasoning}}</td>
+          <td class="numeric">{{.Total}}</td>
+          <td class="numeric">{{.LLMTime}}</td>
+          <td class="numeric">{{.Cost}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="10" style="text-align:center;color:var(--text-secondary)">No calls recorded for this session.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <footer class="refresh-note">
+    Stored in SQLite at scan time, so this breakdown remains available even if
+    the session log has since been rotated away.
+    {{if .Session.Orphaned}}
+    <p class="stat-note" style="margin-top:10px">
+      This session's log file is no longer on disk, so its transcript cannot be
+      shown. Every figure above is read from the stored calls and is unaffected.
+    </p>
+    {{end}}
+  </footer>
+</div>
+</body>
+</html>
+{{end}}

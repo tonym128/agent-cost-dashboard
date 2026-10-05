@@ -1,0 +1,17 @@
+*.jsonl
+__pycache__/
+.DS_Store
+
+# Agent tooling state: node_modules and this tool's own session transcripts.
+node_modules/
+.opencode/
+
+# The compiled dashboard binary. Build it with `go build -o dashd ./cmd/dashd`.
+/dashd
+*.test
+
+# The dashboard's own database, which holds this machine's session history and
+# cost figures. It is rebuilt by a scan, so there is nothing to keep in git.
+*.db
+*.db-wal
+*.db-shm
