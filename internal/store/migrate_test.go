@@ -180,6 +180,24 @@ func appendMigration(t *testing.T, m migration) {
 	migrations = append(append([]migration{}, saved...), m)
 }
 
+// ensureMigration appends m only when a step of that version is not already in
+// the list.
+//
+// It lets a test exercise a step without caring whether the step has been wired
+// into `migrations` yet: the append is a no-op once it is, so the test keeps
+// meaning what it meant either way. Tests that need the list to be malformed —
+// out of order, or with a deliberate duplicate — must use appendMigration
+// instead, which always appends.
+func ensureMigration(t *testing.T, m migration) {
+	t.Helper()
+	for _, existing := range migrations {
+		if existing.version == m.version {
+			return
+		}
+	}
+	appendMigration(t, m)
+}
+
 func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 	t.Helper()
 	rows, err := db.Query("PRAGMA table_info(" + table + ")")

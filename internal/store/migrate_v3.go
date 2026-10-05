@@ -34,6 +34,21 @@ package store
 // The IF EXISTS guards are there because this step costs nothing to be safe to
 // re-run: a database already trimmed by an interrupted run, or one that never
 // had the indexes, opens unchanged.
+// v2PrefixIndexes is the shape of the four indexes as version 2 left them: one
+// single-column index per query axis, none of them covering.
+//
+// It is kept here as the counterpart to v3DropRedundantIndexes — the "before"
+// that the "after" is defined against — and so that a test can build a
+// realistic version 2 database to run the step against. A fresh database no
+// longer creates these; they exist only in databases that a version 2 build
+// already wrote.
+const v2PrefixIndexes = `
+CREATE INDEX IF NOT EXISTS call_day      ON call(day);
+CREATE INDEX IF NOT EXISTS call_project  ON call(project);
+CREATE INDEX IF NOT EXISTS call_session  ON call(session_uid);
+CREATE INDEX IF NOT EXISTS call_model    ON call(model);
+`
+
 const v3DropRedundantIndexes = `
 DROP INDEX IF EXISTS call_day;
 DROP INDEX IF EXISTS call_project;

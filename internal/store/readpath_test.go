@@ -206,7 +206,7 @@ func pad(i int) string { return fmt.Sprintf("%06d", i) }
 // indexes it drops are a strict prefix of an index that remains, and that
 // dropping them changes no plan the read path uses for the worse.
 //
-// They install the step with appendMigration rather than assuming it is in the
+// They install the step with ensureMigration rather than assuming it is in the
 // list, so they test the step itself. Once the entry is appended to `migrations`
 // in store.go they keep passing unchanged — and once it is there, the existing
 // TestFreshAndMigratedSchemasAreIdentical covers the fresh-versus-migrated
@@ -219,7 +219,14 @@ func TestV3DropsTheIndexesVersion2MadeRedundant(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	appendMigration(t, v3DropPrefixIndexes)
+	ensureMigration(t, v3DropPrefixIndexes)
+
+	// A fresh database no longer carries the four prefix indexes — that is the
+	// point of v3 — so they are created here to stand in for a real v2
+	// database, which is what the step actually has to cope with.
+	if _, err := st.db.Exec(v2PrefixIndexes); err != nil {
+		t.Fatal(err)
+	}
 
 	// The indexes have to be there before the step, or this proves nothing.
 	for _, name := range prefixIndexes {
@@ -274,7 +281,7 @@ func TestV3IsSafeToReapply(t *testing.T) {
 // to see it hold while the entry is still being reviewed.
 func TestV3FreshAndMigratedSchemasAreIdentical(t *testing.T) {
 	dir := t.TempDir()
-	appendMigration(t, v3DropPrefixIndexes)
+	ensureMigration(t, v3DropPrefixIndexes)
 
 	fresh, err := Open(filepath.Join(dir, "fresh.db"))
 	if err != nil {
@@ -326,7 +333,7 @@ func TestV3FreshAndMigratedSchemasAreIdentical(t *testing.T) {
 func TestV3PreservesData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v3-data.db")
 	openV0(t, path)
-	appendMigration(t, v3DropPrefixIndexes)
+	ensureMigration(t, v3DropPrefixIndexes)
 
 	st, err := Open(path)
 	if err != nil {
