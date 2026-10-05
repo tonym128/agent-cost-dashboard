@@ -285,6 +285,50 @@ func templateIDs(t *testing.T) []string {
 	return ids
 }
 
+// TestTheDelegatedClickHandlersAreReachableInTheHarness covers the delegation
+// itself, which the rest of this file's tests only load.
+//
+// The inline onclick handlers became data- attributes read by one delegated
+// document listener, because an inline handler is what a Content-Security-Policy
+// has to allow 'unsafe-inline' for — and that would equally permit the handler an
+// injected attribute managed to add. The stub DOM grew addEventListener and
+// closest to model that, and a stub that accepted the call without ever reaching
+// the handler would let the whole mechanism rot unnoticed: removing the
+// delegation would leave every other test here green.
+//
+// So the Copy button is clicked through the document listener and the value it
+// copies is asserted.
+func TestTheDelegatedClickHandlersAreReachableInTheHarness(t *testing.T) {
+	const body = `async function () {
+        const btn = document.getElementById('projects-tbody');
+        // What renderSessions writes for its Copy button: a data- attribute the
+        // delegate looks for, and the value it reads.
+        btn.dataset.copyResume = '';
+        btn.dataset.resumeCmd = 'cd /w && pi --session /logs/u1.jsonl';
+        const copied = [];
+        navigator.clipboard = {
+            writeText: t => { copied.push(t); return Promise.resolve(); },
+        };
+        dispatch('click', btn);
+        // And a click on an element with no data- attribute must do nothing:
+        // the delegate resolves the button by attribute, not by being on the
+        // document at all.
+        dispatch('click', document.getElementById('models-tbody'));
+        return copied;
+    }`
+
+	var copied []string
+	runDashboardJS(t, jsConfig{Ids: templateIDs(t), Data: sentinelPayload()}, body, &copied)
+
+	if len(copied) != 1 {
+		t.Fatalf("the document listener copied %d times, want 1: the delegated "+
+			"handler is not reachable from a click", len(copied))
+	}
+	if want := "cd /w && pi --session /logs/u1.jsonl"; copied[0] != want {
+		t.Errorf("copied %q, want %q", copied[0], want)
+	}
+}
+
 // tableTagsRe matches a cell opening tag, with or without a colspan.
 var tdRe = regexp.MustCompile(`(?s)<td\b([^>]*)>(.*?)</td>`)
 
