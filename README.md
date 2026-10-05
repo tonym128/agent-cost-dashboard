@@ -139,8 +139,10 @@ CI runs `go vet`, `gofmt -l` and `go test -race ./...`, and all three must be
 clean before a PR. See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout map and
 how to add a source.
 
-Around 60-odd tests, no external test dependencies. The ones that matter most are the ones
-that guard properties invisible in a diff:
+Around 240 tests, no external Go test dependencies — though `node` is required
+for the tests that execute the shipped `dashboard.js` in a sandbox, and they fail
+rather than skip when it is absent. The ones that matter most are the ones that
+guard properties invisible in a diff:
 
 * **A growing log is extended, not re-counted.** Re-scanning must not duplicate.
 * **An idle pass does not erase anything.** Replacing a session from an
@@ -151,7 +153,9 @@ that guard properties invisible in a diff:
 * **The protobuf reader refuses malformed input** rather than returning a
   plausible wrong number, since its output becomes token counts.
 * **Nothing untrusted reaches the page as markup** — model names, project paths
-  and titles are all attacker-controlled from the page's point of view.
+  and titles are all attacker-controlled from the page's point of view. Both
+  halves are checked: the Go template by a served page, and the shipped
+  `dashboard.js` by executing it.
 * **The parsers agree with the previous Python implementation.** There is a
   reference-comparison test, but it reads a developer's own local dump and gemini
   logs, so it skips unless those are present — it is not a guarantee you get from
@@ -169,7 +173,48 @@ that guard properties invisible in a diff:
 ```
 
 `GET /healthz` reports the stored totals and the last scan time, which is enough
-for a liveness probe or a status bar.
+for a liveness probe or a status bar. It is the one endpoint that does not require
+`-auth-token`, so a probe does not have to hold the secret.
+
+### In a container
+
+The image is published as `ghcr.io/tonym128/dashd`. **It binds `127.0.0.1`
+inside the container**, which is the same default the binary has. Docker's port
+publishing forwards to the container's external interface, not its loopback, so
+`-p` on its own reaches nothing:
+
+```bash
+# Reading the logs, no dashboard published. This works as-is.
+docker run --rm \
+  -v "$HOME/.pi:/home/dashd/.pi:ro" \
+  -v dashd-data:/var/lib/dashd \
+  ghcr.io/tonym128/dashd scan
+```
+
+Publishing the dashboard is a deliberate two-part opt-in — an explicit non-loopback
+bind **and** a token. Both are required:
+
+```bash
+docker run -d -p 127.0.0.1:8753:8753 \
+  -v "$HOME/.claude:/home/dashd/.claude:ro" \
+  -v dashd-data:/var/lib/dashd \
+  ghcr.io/tonym128/dashd \
+  serve-and-scan \
+    -addr 0.0.0.0:8753 \
+    -auth-token "$(openssl rand -hex 32)" \
+    -models /usr/local/lib/dashd/models.json \
+    -db /var/lib/dashd/dashboard.db
+```
+
+Passing a command **replaces the image's default arguments wholesale**, so
+`-models` and `-db` have to be repeated: `-models` because `scan` in particular
+drops it, and `-db` because it decides where the database lives.
+
+Two traps the `Dockerfile` documents in full: the container's uid has to match
+your own, or it cannot read your `0700` agent log directories and the dashboard
+reports zero activity rather than failing; and the named volume must be created
+owned by you (`docker volume create dashd-data && sudo chown "$(id -u)" dashd-data`)
+for the same reason.
 
 ## Security
 
@@ -177,5 +222,6 @@ The default bind is `127.0.0.1` and there is no authentication. That is the righ
 default for a local tool, but `-addr 0.0.0.0` hands the whole dashboard to
 anything that can reach the port: project paths, session titles and cost figures,
 all read from agent logs you did not write. If you expose it, pass
-`-auth-token` and send `Authorization: Bearer <token>`. See
-[SECURITY.md](SECURITY.md) for the threat model.
+`-auth-token` and send `Authorization: Bearer <token>`. Note that the token passed
+on the command line is visible to any local user through `ps`; see
+[SECURITY.md](SECURITY.md) for the threat model and for the alternatives.

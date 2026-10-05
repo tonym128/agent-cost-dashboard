@@ -31,6 +31,43 @@ RestartSec=5s
 # ---------------------------------------------------------------------------
 # Identity.
 #
+# ---------------------------------------------------------------------------
+# No token, deliberately.
+#
+# -auth-token is passed on argv, so its value is in /proc/<pid>/cmdline and shows
+# up in `ps aux` for every local user for as long as this process runs. dashd has
+# no environment variable or flag file to put it in instead, and no other account
+# needs a secret from this unit.
+#
+# This unit binds loopback, so there is nothing to authenticate: the port is not
+# reachable from off-host, and a token here would protect nothing while handing
+# every local user a credential. SECURITY.md documents the limitation and the
+# cases where it does matter.
+#
+# If you change -addr to a non-loopback address, you need a token, and you should
+# know that argv is the wrong place to put it. dashd reads the flag ONLY — there
+# is no DASHD_AUTH_TOKEN and no config file, so an Environment= line for such a
+# variable would be ignored by the binary and would look like protection that is
+# not there. Until the binary reads one, the options are: leave the bind on
+# loopback and reach the dashboard through an SSH tunnel, or put a reverse proxy
+# in front that terminates TLS and authenticates.
+#
+# Were an environment variable to be added, the arrangement would be an
+# EnvironmentFile= alongside this unit, with the file root-owned and mode 0600:
+#
+#   # /etc/dashd.env  (chmod 0600, chown root:)
+#   DASHD_AUTH_TOKEN=<64 hex chars>
+#
+#   # in this unit:
+#   EnvironmentFile=/etc/dashd.env
+#   ExecStart=/usr/local/bin/dashd serve-and-scan \
+#       -addr 127.0.0.1:8753 -models /usr/local/share/dashd/models.json
+#
+# Note the point of EnvironmentFile here: a 0600 root-owned file is not in argv,
+# and `systemctl show` does not expand it. It is shown as a shape, not as
+# something that works today.
+# ---------------------------------------------------------------------------
+
 # A dashboard is not a system service and must not be root.
 #
 # The tension: dashd reads agent logs out of a home directory, and those are

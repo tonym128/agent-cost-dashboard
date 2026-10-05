@@ -38,6 +38,40 @@ value and send `Authorization: Bearer <token>` or `X-Auth-Token`. It is
 transport-level only — it does not encrypt traffic, so do not put it on an
 untrusted network without TLS in front.
 
+### `-auth-token` on the command line is readable by any local user
+
+This is a real limitation of the current interface, not a caveat about how you
+use it. `dashd` takes the token as a flag and has no other way to receive it: it
+does not read an environment variable, and no flag file exists. A flag value is
+in the process's `argv`, which on Linux is world-readable — `ps aux` shows it to
+every user on the machine, for as long as the process runs.
+
+So a token passed on the command line protects the dashboard against anyone who
+can reach the *port* and does not protect it against anyone with a shell on the
+*host*. That is usually the right trade for a single-user tool — a local user can
+already read the database file — but it should be a decision rather than a
+surprise.
+
+What to do about it:
+
+* **On a machine with other users, keep the default loopback bind.** No token is
+  needed and none is exposed, because nothing can reach the port but you.
+* **Where you must expose it**, generate the token at read time
+  (`-auth-token "$(openssl rand -hex 32)"`) and accept that the host's users can
+  see it, or front the service with a reverse proxy that terminates TLS and does
+  the authentication instead.
+* **`packaging/dashd.service` passes no token, deliberately**, and is commented to
+  say why: it is the loopback arrangement above, where a token would be a secret
+  handed to every local user for no benefit. Its `EnvironmentFile=` comment shows
+  the shape an environment-variable token would take if `cmd/dashd` ever reads
+  one — it does not today, and an `Environment=` line for a variable the binary
+  ignores would be worse than nothing, since it looks like protection that is not
+  there.
+
+Reading the token from the environment (or a root-only file) is a small, contained
+change in `cmd/dashd`, and the reason it is not done yet is that no arrangement
+here needs it.
+
 **`-auth-token` is not a mitigation for script running in the page.** It is a
 request header, checked before the response is built. A payload that executes
 same-origin runs with the reader's authority, not with the token's: it can read
@@ -62,9 +96,26 @@ a title: neither a live element nor a broken-out script block.
 `internal/web/assets/dashboard.js` and is *not* covered by that test — the Go
 template never sees most of it, because the values arrive as JSON and are
 written into the DOM by the script. Every such value must go through the
-script's `escapeHtml`, which escapes `& < > " '` and the backtick. It is defined
-there and used at every `title=`, `data-*` and inline-handler sink; if you add a
-field, it needs the same treatment.
+script's `escapeHtml`, which escapes all six of `& < > " ' ` — both quotes and
+the backtick. It is defined there and used at every `title=` and `data-*` sink;
+if you add a field, it needs the same treatment.
+
+Note what the tests on each side actually check, because they are not
+interchangeable:
+
+| Test | Layer it checks |
+|---|---|
+| `TestPageEscapesUntrustedValues` | the Go template, via a served page |
+| `TestJSEscaperNeutralisesQuotesAndBacktick` | the escaper's own source — that it escapes both quotes and the backtick, and that the old `innerHTML` round-trip has not come back |
+| `TestJSAttributeSinksEscapeTheirValues` | the `title=` and `data-resume-cmd=` sinks are wrapped in `escapeHtml`, read from the source |
+| `TestJSProjectAndSessionNamesAreEscapedNotRaw` | the rendered `renderProjects` / `renderSessions` output, by running the script |
+| `TestEveryResponseCarriesSecurityHeaders`, `TestCSPDoesNotAllowInlineScript`, `TestCSPNonceMatchesTheInlineScripts`, `TestCSPNonceChangesPerResponse` | the response headers, including that all three inline scripts carry the response's nonce |
+| `TestJSHasNoInlineEventHandlers` | that no `on*=` attribute exists in the script, which is what makes the CSP's lack of `'unsafe-inline'` viable |
+| `TestJSResumeCommandIsQuotedForSh` | `sh` quoting of the resume command, which is a different escaping problem entirely |
+
+Only the first row exercises a browser-equivalent escaping; the two middle
+script-source rows are static checks, which is a real limitation and is why the
+row below them exists.
 
 The client half was wrong once and the bug was instructive, so it is worth
 stating what it was. `escapeHtml` used to round-trip its argument through a
