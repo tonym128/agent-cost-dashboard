@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  dashd launchd agent.
+
+  This is the macOS equivalent of packaging/dashd.service. Install as:
+
+      ~/Library/LaunchAgents/com.tonym128.dashd.plist
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tonym128.dashd.plist
+
+  Note it lives in LaunchAgents, not LaunchDaemons: this is a per-user tool
+  that reads your own agent transcripts, so it should run as you, in your
+  login session, and stop when you log out. Running it as root would mean
+  reading root's idea of your home directory, which is both useless and a
+  needless privilege.
+
+  To manage it later:
+      launchctl bootout   gui/$(id -u)/com.tonym128.dashd
+      launchctl kickstart -k gui/$(id -u)/com.tonym128.dashd
+      launchctl list | grep dashd
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tonym128.dashd</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/dashd</string>
+        <string>serve-and-scan</string>
+        <string>-addr</string>
+        <string>127.0.0.1:8753</string>
+        <!--
+          Explicit, for the same reason as the systemd unit: without a price
+          dump, dashd starts cleanly and reports every call as priced at
+          $0.00. Passing it explicitly means relocating the binary later
+          cannot silently produce a confidently wrong dashboard.
+        -->
+        <string>-models</string>
+        <string>/usr/local/share/dashd/models.json</string>
+    </array>
+
+    <!--
+      HOME is already correct inside a launchd agent, because launchd sets it
+      to the account's home directory. That is what makes the default -db
+      resolve to ~/.local/share/dashd/dashboard.db, and -home resolve to ~.
+
+      WorkingDirectory is set anyway because the price dump lookup also checks
+      the current directory, and an unset cwd is a needless difference between
+      how this runs and how you run it in a terminal.
+    -->
+    <key>WorkingDirectory</key>
+    <string>/usr/local/bin</string>
+
+    <!-- Start as soon as the agent is loaded, i.e. at login. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!--
+      Restart if it dies.
+
+      KeepAlive is a dictionary rather than a bare true on purpose. A bare
+      true means "keep it running no matter what", which will fight you if the
+      config is wrong: a bad -models path would spin in a tight restart loop.
+      SuccessfulExit=false restarts only on a failure, and ThrottleInterval
+      caps that at one restart per 10 minutes.
+    -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>ThrottleInterval</key>
+        <integer>600</integer>
+    </dict>
+
+    <!-- Give a legitimate scan time to finish before calling it a failure. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/com.tonym128.dashd.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.tonym128.dashd.err.log</string>
+
+    <!--
+      No EnvironmentVariables block. launchd deliberately does NOT inherit your
+      shell environment, so anything you export in .zshrc is invisible here. If
+      you need PATH or a proxy, add them explicitly:
+
+          <key>EnvironmentVariables</key>
+          <dict>
+              <key>PATH</key>
+              <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+          </dict>
+    -->
+</dict>
+</plist>
+
+<!--
+  ===========================================================================
+  The other way to run this: a timer instead of a resident process.
+
+  launchd has no cron, so the cron-style "one scan per hour" mode is a
+  StartCalendarInterval job. KeepAlive MUST be false (or omitted) for this
+  variant: the process is meant to run once and exit, and KeepAlive=true would
+  restart it the instant it finished, which is exactly the tight loop you do
+  not want. RunAtLoad is true so the first scan happens immediately.
+
+      cp com.tonym128.dashd.plist com.tonym128.dashd-scan.plist
+      # then edit: Label, ProgramArguments -> ["...dashd", "scan"], and swap
+      # the KeepAlive dictionary for the StartCalendarInterval below.
+
+      <key>StartCalendarInterval</key>
+      <dict>
+          <key>Hour</key><integer>0</integer>
+      </dict>
+
+  Serving the same database is then a separate job running `dashd serve`.
+  ===========================================================================
+-->

@@ -1,0 +1,210 @@
+[Unit]
+Description=dashd — cost dashboard for AI coding agents
+Documentation=https://github.com/tonym128/agent-cost-dashboard
+# The scanner only reads local files; the web server binds a socket. Neither
+# needs the network to come up, but the default is to be safe on a laptop that
+# joins a VPN late.
+After=network.target
+
+[Service]
+Type=simple
+
+# The scan-and-serve mode: one process owns the scanner and serves the
+# dashboard. For the cron-style mode, see dashd-scan.timer at the bottom of
+# this file.
+#
+# -models is passed explicitly. dashd would also find models.json beside the
+# binary or one directory up, but being explicit means moving the binary later
+# cannot silently break pricing — and missing pricing is the failure mode that
+# matters here, because the process still exits 0 and reports it priced your
+# calls at $0.00.
+ExecStart=/usr/local/bin/dashd serve-and-scan \
+    -addr 127.0.0.1:8753 \
+    -models /usr/local/share/dashd/models.json
+
+# A scan that fails because a log was being written to right now will succeed
+# on the next pass, so restarting is the correct response. RestartSec stops a
+# crash-looping binary from spinning the CPU.
+Restart=on-failure
+RestartSec=5s
+
+# ---------------------------------------------------------------------------
+# Identity.
+#
+# A dashboard is not a system service and must not be root.
+#
+# The tension: dashd reads agent logs out of a home directory, and those are
+# usually mode 0700 belonging to the human who runs the agents. So this user
+# needs read access to those directories. Two workable arrangements:
+#
+#   1. Run as the human. Edit the two lines below to
+#        User=<your-uid>
+#        Environment=HOME=/home/you
+#      Simplest, and it can read the logs because it *is* you. This is what
+#      most people want for a personal tool.
+#
+#   2. Keep the dedicated dashd user and grant it group read access:
+#        sudo usermod -aG <agent-logs-group> dashd
+#
+# Do not switch to root to work around a permissions error. These are your own
+# agent transcripts, and the agent that wrote them already has full access.
+# ---------------------------------------------------------------------------
+User=dashd
+Group=dashd
+
+Environment=HOME=/var/lib/dashd
+
+# ---------------------------------------------------------------------------
+# Hardening.
+#
+# VERIFICATION NOTE: this unit was written and reviewed but never started under
+# systemd on a real machine. The directives below are the conservative, widely
+# used set. The stricter ones that are commented out at the bottom are worth
+# enabling once you have confirmed the service actually runs.
+#
+# Each active line is here for a reason. This process needs to read agent logs
+# and write exactly one SQLite file, and nothing else.
+# ---------------------------------------------------------------------------
+
+# Cannot gain privileges through setuid or file capabilities.
+NoNewPrivileges=true
+
+# A private /tmp, so a symlink planted by another user cannot redirect a
+# temporary file this process writes.
+PrivateTmp=true
+
+# No pseudo-devices: no /dev/sd*, no raw memory access.
+PrivateDevices=true
+
+# The entire filesystem is read-only, including /usr, /etc and /bin. dashd
+# writes exactly one thing, its database, and StateDirectory below covers it.
+ProtectSystem=strict
+
+# Same idea for /home. If the agent logs live there, dashd reads them and never
+# writes to them.
+ProtectHome=read-only
+
+# Kernel surfaces this process has no business touching.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# No new kernel namespaces. PrivateUsers=true is deliberately NOT set: it
+# remaps ownership, which would hide your 0700 agent logs from dashd and defeat
+# the entire point of the Identity section above. It also conflicts with
+# RestrictNamespaces below.
+RestrictNamespaces=true
+PrivateUsers=false
+
+# Cannot load a setuid/setgid binary, cannot manipulate real-time scheduling,
+# cannot change the kernel personality.
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+# Only INET sockets. No unix sockets, no netlink.
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# (There is deliberately no CoreDumps= directive here. It reads like it should
+# be one and appears in hardening guides, but it has never been merged upstream
+# and systemd silently ignores it — systemd-analyze verify says so. Default
+# behaviour is already not to write cores.)
+
+# The one writable path. StateDirectory=dashd creates /var/lib/dashd, owned by
+# the User above, and makes it writable even under ProtectSystem=strict. This
+# is where HOME points, so the default -db resolves under it as
+# /var/lib/dashd/.local/share/dashd/dashboard.db.
+StateDirectory=dashd
+StateDirectoryMode=0750
+
+# ReadWritePaths is intentionally NOT used. StateDirectory already grants the
+# single writable directory needed, and a broader path here would quietly
+# widen what a compromised dashd could modify.
+#
+# ---------------------------------------------------------------------------
+# Stricter options. Each of these is individually defensible, but together
+# they are the most likely thing to break a first run — in particular
+# SystemCallFilter, since SQLite's mmap and the Go runtime's use of a few
+# syscalls are not obvious from the outside. Enable them one at a time, and
+# check `journalctl -u dashd` after each.
+# ---------------------------------------------------------------------------
+# CapabilityBoundingSet=
+# AmbientCapabilities=
+# SystemCallFilter=@system-service
+# SystemCallArchitectures=native
+# ProtectClock=true
+# ProtectHostname=true
+# ProtectProc=invisible
+# ProcSubset=pid
+# MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
+
+# ===========================================================================
+# Installation
+#
+#   sudo install -d -m 0755 /usr/local/share/dashd
+#   sudo install -m 0755 dashd /usr/local/bin/dashd
+#   sudo install -m 0644 models.json /usr/local/share/dashd/models.json
+#   sudo install -m 0644 packaging/dashd.service /etc/systemd/system/
+#   sudo useradd --system --home-dir /var/lib/dashd \
+#                --shell /usr/sbin/nologin dashd
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dashd
+#
+# Then edit User= and Environment=HOME= as described, since reading your
+# agent's logs requires being you or sharing a group with them.
+#
+# models.json MUST be present. Without it dashd still starts, still reports
+# that it priced your calls, and shows $0.00 for all of them. Refresh it with
+# `python3 update_models.py` after pulling a new release.
+# ===========================================================================
+
+# ===========================================================================
+# Optional: the cron-style mode, where the scanner runs on a timer instead of
+# living inside the server process.
+#
+# Install the unit below as /etc/systemd/system/dashd-scan.service and the
+# timer as /etc/systemd/system/dashd-scan.timer, then:
+#
+#   sudo systemctl disable --now dashd
+#   sudo systemctl enable --now dashd-scan.timer
+#
+# To keep serving the dashboard from the same database, change dashd.service's
+# ExecStart to `dashd serve` (read-only; the timer does the scanning).
+# ===========================================================================
+#
+# [Unit]
+# Description=Run one dashd scan pass
+#
+# [Service]
+# Type=oneshot
+# User=dashd
+# Group=dashd
+# Environment=HOME=/var/lib/dashd
+# ExecStart=/usr/local/bin/dashd scan -models /usr/local/share/dashd/models.json
+# StateDirectory=dashd
+# NoNewPrivileges=true
+# PrivateTmp=true
+# PrivateDevices=true
+# ProtectSystem=strict
+# ProtectHome=read-only
+#
+# ---
+#
+# [Unit]
+# Description=Run a dashd scan every 10 minutes
+#
+# [Timer]
+# OnBootSec=2min
+# OnUnitActiveSec=10min
+# # Spread the load: a laptop that boots at 09:00 should not scan at 09:00
+# # every single time.
+# RandomizedDelaySec=1min
+# # Catch up after the machine was asleep instead of silently skipping a
+# # window. Costs nothing here, because a scan is incremental.
+# Persistent=true
+#
+# [Install]
+# WantedBy=timers.target
