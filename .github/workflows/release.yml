@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Manual runs do a full dry run without publishing, which is how the
+  # Dockerfile and .goreleaser.yml get exercised before the first real tag.
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Prove the image builds and runs before anything is published. This job has
+  # no write permissions at all: if it could push, a mistake here would ship.
+  verify:
+    name: verify image builds
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the image for the host architecture
+        run: docker build -t dashd:verify .
+
+      - name: The image finds its baked-in price dump
+        # The failure this guards against is quiet. dashd carries a ~41-model
+        # price table compiled in, so a missing models.json does not crash it:
+        # it prices those 41 and reports every other model as $0.00.
+        #
+        # So the probe uses a model that is in the OpenRouter catalogue but NOT
+        # in that compiled-in table. x-ai/grok-build-0.1 prices at $1.00/M
+        # in and $2.00/M out, so 1M + 1M is $3.00 if the catalogue loaded and
+        # $0.00 if only the fallback is present. An earlier version of this
+        # step seeded claude-sonnet-4-5, which is in the fallback table, and
+        # therefore passed even with pricing completely broken.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/home/.claude/projects/p1
+          # The quoted heredoc is deliberate: this is literal JSON and must not
+          # be expanded by the shell.
+          cat > /tmp/home/.claude/projects/p1/s.jsonl <<'EOF'
+          {"type":"assistant","message":{"model":"x-ai/grok-build-0.1","usage":{"input_tokens":1000000,"output_tokens":1000000}}}
+          EOF
+          # No -models flag: this also asserts that the price dump is
+          # discoverable, since `scan` replaces CMD and drops any flag that
+          # was baked into it.
+          docker run --rm \
+            -v /tmp/home/.claude:/home/dashd/.claude:ro \
+            -v dashd-verify-data:/var/lib/dashd \
+            dashd:verify scan | tee /tmp/out
+          # -F so the pattern is a literal string; the $ is escaped in double
+          # quotes so the shell keeps it literal.
+          if grep -qF "\$0.00" /tmp/out; then
+            echo "::error::image priced nothing; models.json was not baked in"
+            exit 1
+          fi
+          if grep -qF 'unpriced' /tmp/out; then
+            echo "::error::image could not price a catalogue model"
+            cat /tmp/out
+            exit 1
+          fi
+          grep -F 'cost' /tmp/out
+
+      - name: The healthcheck endpoint answers
+        run: |
+          set -euo pipefail
+          docker run -d --name dashd-verify -p 127.0.0.1:8753:8753 \
+            -v dashd-verify-data:/var/lib/dashd dashd:verify
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8753/healthz >/dev/null; then
+              echo "healthz ok after ${i}s"
+              docker rm -f dashd-verify
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::/healthz never answered"
+          docker logs dashd-verify || true
+          docker rm -f dashd-verify || true
+          exit 1
+
+  release:
+    name: goreleaser
+    needs: verify
+    runs-on: ubuntu-latest
+    # Least privilege, scoped to this job only: the workflow-level default is
+    # read-only, and publishing a release is the one thing that needs write.
+    permissions:
+      contents: write
+    # ghcr.io push. The GHCR token is the GITHUB_TOKEN with packages: write.
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # GoReleaser reads tags and commit history to build the changelog and
+          # to stamp mod_timestamp for reproducible archives.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Set up QEMU
+        # dockers_v2 builds linux/arm64 too. Without an emulator the arm64 leg
+        # of the buildx run fails on an x86 runner.
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to ghcr.io
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release
+        id: goreleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          # ~> v2 tracks the current major, which is the compatibility promise
+          # the config was written against (dockers_v2 needs >= v2.12).
+          version: "~> v2"
+          # A tag push publishes. A manual dispatch builds and checks the
+          # config without creating a release or pushing an image.
+          args: >-
+            ${{ startsWith(github.ref, 'refs/tags/v')
+                && 'release --clean'
+                || 'release --snapshot --clean --skip=publish' }}
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Release"
+            echo
+            echo "- triggered by: \`${{ github.ref }}\`"
+            echo "- published: ${{ steps.goreleaser.outputs.release != '' }}"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
