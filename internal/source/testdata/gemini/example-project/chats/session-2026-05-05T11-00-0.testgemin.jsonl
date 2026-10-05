@@ -1,0 +1,6 @@
+{"sessionId":"test-session-gemini","projectHash":"0000000000000000000000000000000000000000000000000000000000000000","startTime":"2026-05-05T11:00:00.000Z","lastUpdated":"2026-05-05T11:00:41.000Z","kind":"main"}
+{"id":"info-0001","timestamp":"2026-05-05T11:00:00.100Z","type":"info","content":"Loaded 3 workspace directories."}
+{"id":"user-0001","timestamp":"2026-05-05T11:00:01.000Z","type":"user","content":[{"text":"Which token fields does the parser read?"}]}
+{"id":"gemini-0001","timestamp":"2026-05-05T11:00:19.000Z","type":"gemini","content":"The parser reads the tokens block.","thoughts":[{"subject":"Reading the parser","description":"The tokens object holds input, output, cached and thoughtsTokenCount.","timestamp":"2026-05-05T11:00:18.500Z"}],"tokens":{"input":12000,"output":900,"cached":8000,"thoughtsTokenCount":250,"tool":0,"total":12900},"model":"gemini-3-flash-preview"}
+{"id":"gemini-0002","timestamp":"2026-05-05T11:00:41.000Z","type":"gemini","content":"Cached tokens are a subset of input, so they are subtracted.","toolCalls":[{"name":"read_file","args":{"absolute_path":"/home/testuser/project/main.go"}}],"tokens":{"input":22000,"output":1500,"cached":21000,"thoughtsTokenCount":0,"tool":0,"total":23500},"model":"gemini-3-flash-preview"}
+{"id":"info-0002","timestamp":"2026-05-05T11:00:42.000Z","type":"info","content":"Session ended."}

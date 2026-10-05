@@ -1,4 +1,9 @@
 *.jsonl
+
+# ...but the parser fixtures are JSONL on purpose: that is the format under test.
+# Without this the fixtures are silently un-committed and every fixture-backed
+# test fails on a clean checkout with "no such file or directory".
+!internal/source/testdata/**/*.jsonl
 __pycache__/
 .DS_Store
 
