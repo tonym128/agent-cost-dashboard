@@ -673,10 +673,19 @@ func (s *Store) Reprice(ctx context.Context, price func(model string, in, out, c
 	type row struct {
 		session, key, model             string
 		in, out_, cacheRead, cacheWrite int64
+		reasoning                       int64
 	}
+	// reasoning_tokens is selected because it is part of the billable output.
+	// Every parser stores OutputTokens as the non-reasoning remainder and
+	// ReasoningTokens as the carved-out slice, and prices the sum at the output
+	// rate (see source.priceGenerated). Pricing output_tokens alone here dropped
+	// the reasoning, so repricing a database whose prices had not changed
+	// *lowered* every total — measured at 12.3% on the committed reference
+	// conversation. Reprice must reproduce the scan-time arithmetic exactly, or
+	// the documented remedy for stale prices is itself a source of wrong money.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT session_uid, call_key, model, input_tokens, output_tokens,
-		        cache_read_tokens, cache_write_tokens FROM call`)
+		        reasoning_tokens, cache_read_tokens, cache_write_tokens FROM call`)
 	if err != nil {
 		return 0, err
 	}
@@ -684,7 +693,7 @@ func (s *Store) Reprice(ctx context.Context, price func(model string, in, out, c
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.session, &r.key, &r.model, &r.in, &r.out_,
-			&r.cacheRead, &r.cacheWrite); err != nil {
+			&r.reasoning, &r.cacheRead, &r.cacheWrite); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -704,7 +713,9 @@ func (s *Store) Reprice(ctx context.Context, price func(model string, in, out, c
 		}
 		defer stmt.Close()
 		for _, r := range all {
-			cost, priced := price(r.model, r.in, r.out_, r.cacheRead, r.cacheWrite)
+			// output + reasoning is the billable generated count: the parsers carve
+			// thinking out of output for display and bill the whole thing.
+			cost, priced := price(r.model, r.in, r.out_+r.reasoning, r.cacheRead, r.cacheWrite)
 			if _, err := stmt.Exec(cost, boolInt(priced), r.session, r.key); err != nil {
 				return err
 			}
