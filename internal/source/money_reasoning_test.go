@@ -92,3 +92,36 @@ func TestGeminiBillsReasoningAtTheOutputRate(t *testing.T) {
 			thinking.CostUSD, want)
 	}
 }
+
+// TestTotalTokensIncludesReasoning guards the column total against the split.
+//
+// Reasoning is carved out of OutputTokens so it can be itemised, but it is still
+// a token the provider generated and billed. Excluding it understated every
+// call's total: on the OpenCode fixture, 47410 stored against 49305 actual, a
+// 3.8% shortfall, which propagates into the session rollups, the models table
+// and the tokens/sec throughput figure.
+func TestTotalTokensIncludesReasoning(t *testing.T) {
+	// Claude is used here because its fixture is a JSONL file with a call that
+	// carries reasoning; the arithmetic under test is in addCall and is the same
+	// for all six parsers.
+	claudePath := copyFixtureTo(t, "claude/session-1.jsonl")
+	sw, _, err := NewClaudeParser().Parse(claudePath, model.ScanState{}, testPricer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawReasoning bool
+	for _, c := range sw.Calls {
+		want := c.InputTokens + c.OutputTokens + c.ReasoningTokens +
+			c.CacheReadTokens + c.CacheWriteTokens
+		if c.TotalTokens != want {
+			t.Errorf("call %q total = %d, want %d (every bucket, reasoning included)",
+				c.CallKey, c.TotalTokens, want)
+		}
+		if c.ReasoningTokens > 0 {
+			sawReasoning = true
+		}
+	}
+	if !sawReasoning {
+		t.Fatal("the fixture no longer exercises a call with reasoning tokens")
+	}
+}

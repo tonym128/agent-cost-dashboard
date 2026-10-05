@@ -155,7 +155,13 @@ func allZeroTokens(c model.Call) bool {
 
 func (b *sessionBuilder) appendCall(c model.Call) {
 	if c.TotalTokens == 0 {
-		c.TotalTokens = c.InputTokens + c.OutputTokens + c.CacheReadTokens + c.CacheWriteTokens
+		// Reasoning is included: it was carved out of OutputTokens for display,
+		// but it is still a token the provider generated and billed, so leaving
+		// it out made every total, the tokens/sec throughput figure and the
+		// models table understate by the thinking count. On the OpenCode
+		// fixture that was 47410 stored against 49305 actual, a 3.8% shortfall.
+		c.TotalTokens = c.InputTokens + c.OutputTokens + c.CacheReadTokens +
+			c.CacheWriteTokens + c.ReasoningTokens
 	}
 	if c.CallKey == "" {
 		// No id in the log: fall back to position. Ordinals are counted over the
