@@ -182,6 +182,15 @@ func (p *AntigravityParser) consumeStep(b *sessionBuilder, idx int64, stepType, 
 			return
 		}
 		u := ProtoVarints(usageBlob)
+		if len(u) == 0 {
+			// The usage sub-message decoded to no fields at all: a varint that
+			// never terminates, or a body truncated inside its own declared
+			// length. That is a corrupt blob rather than a call that spent
+			// nothing, and it must not become a row — a zero-token call would
+			// pad the call count with a call that never happened. This is the
+			// same truncation the length check above handles, one level down.
+			return
+		}
 
 		modelID := int32(u[agyUsageModel])
 		modelName, known := agyModelNames[modelID]
@@ -536,10 +545,19 @@ func (p *OpenCodeParser) consumeMessage(b *sessionBuilder, id string, created in
 	input := num(tokens, "input")
 	output := num(tokens, "output")
 	reasoning := num(tokens, "reasoning")
-	cacheRead := num(tokens, "cache.read")
-	cacheWrite := num(tokens, "cache.write")
+	// The cache counters are nested under `cache`, so they take a lookup in the
+	// sub-object rather than a flat one. Reading them as the literal keys
+	// "cache.read" and "cache.write" matched nothing, so every OpenCode session
+	// reported its cached tokens as zero and billed them at the input rate
+	// instead of the cache rate.
+	cache := asMap(tokens["cache"])
+	cacheRead := num(cache, "read")
+	cacheWrite := num(cache, "write")
 	// Unlike Antigravity, output here excludes reasoning, so the two are summed
-	// rather than carved out of one figure.
+	// rather than carved out of one figure — and the sum is what has to be
+	// billed. price() prices OutputTokens alone, which on a log that reports the
+	// two separately charges for neither the reasoning nor the tokens spent
+	// producing it.
 
 	callTS := ts
 	if c := parseTime(nestedAny(data, "time", "completed")); !c.IsZero() {
@@ -571,7 +589,7 @@ func (p *OpenCodeParser) consumeMessage(b *sessionBuilder, id string, created in
 		LLMSeconds:       llmSeconds,
 		CallKey:          "msg:" + id,
 	}
-	price(pricer, &c)
+	priceGenerated(pricer, &c, int(output+reasoning))
 	b.addCall(c)
 }
 

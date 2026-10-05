@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":\"assistant\",\"message\":{\"model\":\"0\",\"usage\":{\"output_tokens\":1}}}")

@@ -1,0 +1,13 @@
+{
+  "comment": "Reference totals as the previous Python implementation reported them for the conversation the sanitised fixture in ../antigravity/antigravity_steps.json is derived from. Kept so the Go parser's token arithmetic can be checked against a second implementation rather than against itself. The Python implementation is gone; these numbers were taken from its dump while it was still available, and the fixture was then built to reproduce them exactly. Reasoning is a ceiling, not an equality: Python does not clamp it to the generated count and the Go parser does.",
+  "sessions": {
+    "test-antigravity-session-1": {
+      "messages": 51,
+      "input": 304660,
+      "output": 6329,
+      "cached": 2274999,
+      "reasoning": 13284,
+      "cost": 0.324919
+    }
+  }
+}
