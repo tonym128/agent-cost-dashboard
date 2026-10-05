@@ -113,6 +113,11 @@ func modelsJSON(models []store.ModelStat, totalCost float64) []map[string]any {
 // The page renders a project as a row that expands into that breakdown, so the
 // three are one thing to read together rather than three separate queries the
 // browser has to correlate.
+//
+// store.Projects() groups by (project, agent), so a directory used with two
+// agents arrives as two rows. The page shows one row per project, so they are
+// merged here: without that the table lists more projects than the headline
+// "Projects" card counts, which is the same figure from two different queries.
 func projectsJSON(
 	projects []store.ProjectStat,
 	sessions []store.SessionRow,
@@ -162,8 +167,8 @@ func projectsJSON(
 	}
 
 	out := make([]map[string]any, 0, len(projects))
+	index := map[string]int{}
 	for _, p := range projects {
-		rows := orEmpty(sessionsBy[p.Project])
 		llm := 0.0
 		tool := 0.0
 		tokens := int64(0)
@@ -175,9 +180,10 @@ func projectsJSON(
 			tool += s.ToolSeconds
 			tokens += s.TotalTokens
 		}
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"name":                  p.Project,
 			"agent_cmd":             p.Agent,
+			"agents":                []string{p.Agent},
 			"cost":                  p.Cost,
 			"sessions":              p.Sessions,
 			"messages":              p.Calls,
@@ -189,12 +195,45 @@ func projectsJSON(
 			"tool_time_display":     humanDuration(tool),
 			"last_activity":         p.LastTS,
 			"last_activity_display": displayTime(p.LastTS),
-			"sessions_list":         rows,
+			"sessions_list":         orEmpty(sessionsBy[p.Project]),
 			"models":                orEmpty(modelsBy[p.Project]),
 			"tools":                 orEmpty(toolsBy[p.Project]),
-		})
+		}
+		if i, ok := index[p.Project]; ok {
+			// A second agent in the same directory folds into the row already
+			// emitted. The session-derived figures are keyed on the project
+			// alone and so are already counted once; only the per-agent sums
+			// are added.
+			mergeProjectRow(out[i], p, llm, tool)
+			continue
+		}
+		index[p.Project] = len(out)
+		out = append(out, row)
 	}
 	return out
+}
+
+// mergeProjectRow folds another agent's row for the same project into the row
+// the page already has.
+func mergeProjectRow(row map[string]any, p store.ProjectStat, llm, tool float64) {
+	row["cost"] = row["cost"].(float64) + p.Cost
+	row["sessions"] = row["sessions"].(int) + p.Sessions
+	row["messages"] = row["messages"].(int) + p.Calls
+	row["llm_time"] = row["llm_time"].(float64) + llm
+	row["tool_time"] = row["tool_time"].(float64) + tool
+	row["llm_time_display"] = humanDuration(row["llm_time"].(float64))
+	row["tool_time_display"] = humanDuration(row["tool_time"].(float64))
+	if p.LastTS > row["last_activity"].(int64) {
+		row["last_activity"] = p.LastTS
+		row["last_activity_display"] = displayTime(p.LastTS)
+	}
+	agents := row["agents"].([]string)
+	for _, a := range agents {
+		if a == p.Agent {
+			return
+		}
+	}
+	row["agents"] = append(agents, p.Agent)
 }
 
 // projectThroughput weights a project's token rate by the time actually spent
@@ -239,7 +278,10 @@ func toolsJSON(tools []store.ToolStat, totalSeconds float64) []map[string]any {
 			"cost":             t.Cost,
 			"time_display":     humanDuration(t.Seconds),
 			"avg_time_display": humanDuration(avg),
-			"pct":              pct,
+			// avg_seconds is the same figure as a number, so the browser can
+			// sort the Avg Time column rather than its formatted string.
+			"avg_seconds": avg,
+			"pct":         pct,
 		})
 	}
 	return out

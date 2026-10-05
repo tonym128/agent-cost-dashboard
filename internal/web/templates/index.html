@@ -180,7 +180,7 @@
       <thead>
         <tr>
           <th>Model</th><th>Messages</th><th>Total Tokens</th>
-          <th>Cache Read</th><th>Cache Write</th><th>Output</th>
+          <th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Write</th>
           <th>Reasoning</th><th>Tokens/s</th><th>Cost</th><th>Share</th>
         </tr>
       </thead>
@@ -192,7 +192,7 @@
     <div class="section-header"><span>Tool Usage</span></div>
     <table id="tools-table">
       <thead>
-        <tr><th>Tool</th><th>Calls</th><th>Total Time</th><th>Errors</th><th>Associated Cost</th></tr>
+        <tr><th>Tool</th><th>Calls</th><th>Total Time</th><th>Avg Time</th><th>Errors</th><th>Associated Cost</th></tr>
       </thead>
       <tbody id="tools-tbody"></tbody>
     </table>
@@ -202,7 +202,9 @@
     <div class="section-header"><span>Projects</span></div>
     <table id="projects-table">
       <thead>
-        <tr><th>Project</th><th>Sessions</th><th>Messages</th><th>Cost</th><th>Last Activity</th></tr>
+        <tr><th>Project</th><th>Sessions</th><th>Messages</th><th>Tokens</th>
+          <th>LLM Time</th><th>Tool Time</th><th>Tokens/s</th>
+          <th>Cost</th><th>Last Activity</th></tr>
       </thead>
       <tbody id="projects-tbody"></tbody>
     </table>

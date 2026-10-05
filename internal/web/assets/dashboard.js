@@ -212,6 +212,15 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// Column counts per table. The header row in the template and the cells each
+// renderer emits are asserted against these by the Go test, so the two cannot
+// drift apart again.
+const SESSIONS_COLUMNS = 10;
+const MODELS_COLUMNS = 11;
+const TOOLS_COLUMNS = 6;
+const PROJECTS_COLUMNS = 9;
+const ACTIVITY_COLUMNS = 9;
+
 function formatFullNumber(value) {
     const n = Number(value) || 0;
     return String(Math.round(n));
@@ -356,7 +365,7 @@ function renderProjects() {
                 <td style="color: var(--text-secondary)">${p.last_activity_display}</td>
             </tr>
             <tr class="model-breakdown" id="${rowId}">
-                <td colspan="9">
+                <td colspan="${PROJECTS_COLUMNS}">
                     <div class="model-tree">
                         <div class="detail-line"><strong>Path:</strong> ${escapeHtml(p.name)}</div>
                         <div class="detail-line" title="${escapeHtml(tokenTitle(p))}"><strong>Tokens:</strong> ${formatCompactNumber(p.tokens)} ${tokenDetailText(p, true) ? `(${escapeHtml(tokenDetailText(p, true))})` : ''}</div>
@@ -608,8 +617,16 @@ function renderTools() {
     const tbody = document.getElementById('tools-tbody');
     const sorted = sortData(tools, toolSort);
 
+    // The cost attributed to each tool is what the column header promises, so it
+    // is what is rendered; the bar underneath is that tool's share of the total
+    // attributed cost, not a share of wall time.
+    const totalCostAttributed = tools.reduce((sum, t) => sum + (Number(t.cost) || 0), 0);
+
     tbody.innerHTML = sorted.map(t => {
         const errorStyle = t.errors > 0 ? 'color: var(--accent-red)' : 'color: var(--text-secondary)';
+        const share = totalCostAttributed > 0
+            ? (Number(t.cost) || 0) / totalCostAttributed * 100
+            : 0;
         return `
             <tr>
                 <td><span class="model-tag model-other">${escapeHtml(t.name)}</span></td>
@@ -617,11 +634,11 @@ function renderTools() {
                 <td style="color: var(--accent-yellow)">${t.time_display}</td>
                 <td style="color: var(--text-secondary)">${t.avg_time_display}</td>
                 <td style="${errorStyle}">${t.errors}</td>
-                <td>
+                <td title="share of attributed cost: ${share.toFixed(1)}%">
+                    <span class="cost">$${(Number(t.cost) || 0).toFixed(2)}</span>
                     <div class="bar-container" style="width: 100px; display: inline-block; vertical-align: middle;">
-                        <div class="bar" style="width: ${t.pct}%; background: var(--accent-yellow)"></div>
+                        <div class="bar" style="width: ${share.toFixed(1)}%; background: var(--accent-green)"></div>
                     </div>
-                    ${t.pct.toFixed(1)}%
                 </td>
             </tr>
         `;
@@ -820,7 +837,7 @@ updateSortIcons('tools-table', toolSort);
         }
         if (summaryEl) summaryEl.innerHTML = summarize(buckets, metric, data.step);
         chartEl.innerHTML = chart(buckets, metric, step, data);
-        if (tbodyEl) tbodyEl.innerHTML = table(buckets, step, data);
+        if (tbodyEl) tbodyEl.innerHTML = renderActivityTable(buckets, step, data);
     }
 
     function summarize(buckets, metric, stepSeconds) {
@@ -967,7 +984,7 @@ updateSortIcons('tools-table', toolSort);
             '<div class="activity-axis">' + axis + '</div>';
     }
 
-    function table(buckets, step, data) {
+    function renderActivityTable(buckets, step, data) {
         const current = buckets.length
             ? buckets[buckets.length - 1].t * 1000
             : 0;

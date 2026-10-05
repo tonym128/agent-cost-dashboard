@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +61,14 @@ func seed(t *testing.T, st *store.Store, now time.Time) {
 				// The third model has no rate, which must be reported rather
 				// than presented as free.
 				Priced: spec.cost > 0,
+			}},
+			// Tool calls are what the tools table is built from, and they
+			// carry the attributed cost its "Associated Cost" column shows.
+			ToolCalls: []model.ToolCall{{
+				SessionUID: uid, CallKey: "c1", Agent: spec.agent,
+				Project: spec.project, Tool: "read_file",
+				Time:    now.Add(-time.Duration(i) * time.Hour),
+				Seconds: 0.25, IsError: i == 2,
 			}},
 		}
 		if err := st.ReplaceSession(sess); err != nil {
@@ -430,5 +440,216 @@ func TestJSHasNoDeadFilterBar(t *testing.T) {
 		if strings.Contains(script, dead) {
 			t.Errorf("dashboard.js still targets %q, which is not in the template", dead)
 		}
+	}
+}
+
+// ---------------------------------------------------------------- layout parity
+
+// tableLayout maps each table to the renderer that fills its tbody.
+//
+// The count is asserted two ways: the number of <th> in the template's thead,
+// and the number of <td> the JS renderer emits for one row. They drifted apart
+// once already — the models table showed tokens/sec under a "Cost" heading —
+// and nothing caught it, so the check is mechanical from now on.
+var tableLayout = []struct {
+	table    string
+	tbody    string
+	renderer string
+	// columns is the name of the constant dashboard.js uses for this table's
+	// colspans, so the empty state and expanded rows cannot drift either.
+	columns string
+}{
+	{"sessions-table", "sessions-tbody", "renderSessions", "SESSIONS_COLUMNS"},
+	{"models-table", "models-tbody", "renderModels", "MODELS_COLUMNS"},
+	{"tools-table", "tools-tbody", "renderTools", "TOOLS_COLUMNS"},
+	{"projects-table", "projects-tbody", "renderProjects", "PROJECTS_COLUMNS"},
+	{"activity-table", "activity-tbody", "renderActivityTable", "ACTIVITY_COLUMNS"},
+}
+
+func TestTableHeadersMatchRenderedCells(t *testing.T) {
+	page := readAsset(t, templateFS, "templates/index.html")
+	script := readAsset(t, assets, "assets/dashboard.js")
+
+	for _, tbl := range tableLayout {
+		t.Run(tbl.table, func(t *testing.T) {
+			headers := countTag(t, page, tbl.table, "th")
+			cells := countRendererCells(script, tbl.renderer)
+			if headers != cells {
+				t.Errorf("%s has %d headers but its renderer emits %d cells; "+
+					"every column needs a heading and every heading needs a cell",
+					tbl.table, headers, cells)
+			}
+			// The tbody must be the one the renderer targets, otherwise this
+			// check is comparing two unrelated things that happen to match.
+			if !strings.Contains(page, `id="`+tbl.tbody+`"`) {
+				t.Errorf("template has no tbody %q for %s", tbl.tbody, tbl.table)
+			}
+			// The colspan an empty or expanded row uses has to match too, or
+			// the empty state renders a short row.
+			if got := declaredColumns(t, script, tbl.columns); got != headers {
+				t.Errorf("%s: colspan constant %s is %d, headers are %d",
+					tbl.table, tbl.columns, got, headers)
+			}
+		})
+	}
+}
+
+// declaredColumns reads the `const <TABLE>_COLUMNS = n` the JS uses for the
+// empty-state and expanded-row colspans, checking that the renderer actually
+// declares one for this table.
+func declaredColumns(t *testing.T, script, name string) int {
+	t.Helper()
+	i := strings.Index(script, name+" = ")
+	if i < 0 {
+		t.Errorf("dashboard.js declares no %s constant", name)
+		return -1
+	}
+	digits := regexp.MustCompile(`\d+`).FindString(script[i+len(name)+3:])
+	if digits == "" {
+		t.Errorf("%s is not assigned a number", name)
+		return -1
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil {
+		t.Errorf("%s is not a number: %v", name, err)
+		return -1
+	}
+	return n
+}
+
+// countRendererCells counts the <td> elements in a renderer's data-row
+// template.
+//
+// The function body is extracted by brace matching from `function NAME(`, so the
+// count is of that one function's cells and not of the file's. Nested template
+// literals and braces do not confuse it because only the outer braces of the
+// function are tracked.
+func countRendererCells(script, fn string) int {
+	start := strings.Index(script, "function "+fn+"(")
+	if start < 0 {
+		return -1
+	}
+	body := script[start:]
+	depth := 0
+	seenBody := false
+	end := len(body)
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '{':
+			depth++
+			seenBody = true
+		case '}':
+			depth--
+			if seenBody && depth == 0 {
+				end = i
+				i = len(body)
+			}
+		}
+	}
+	// Cells belonging to an expandable detail row or an empty-state row are
+	// not data cells; they use colspan and would double-count.
+	text := body[:end]
+	lines := strings.Split(text, "\n")
+	cells := 0
+	for _, line := range lines {
+		if !strings.Contains(line, "<td") || strings.Contains(line, "colspan") {
+			continue
+		}
+		cells += strings.Count(line, "<td")
+	}
+	return cells
+}
+
+// countTag counts <tag occurrences inside one table's thead in the template.
+func countTag(t *testing.T, page, table, tag string) int {
+	t.Helper()
+	i := strings.Index(page, `<table id="`+table+`">`)
+	if i < 0 {
+		t.Fatalf("template has no table %q", table)
+	}
+	rest := page[i:]
+	end := strings.Index(rest, "</table>")
+	if end < 0 {
+		t.Fatalf("table %q is not closed", table)
+	}
+	// `<th` would also match `<thead>`, so the tag must be followed by its own
+	// delimiter.
+	re := regexp.MustCompile(`<` + tag + `[ >]`)
+	return len(re.FindAllString(rest[:end], -1))
+}
+
+// ---------------------------------------------------------------- table data
+
+func TestToolsTableShowsTheCostTheStoreComputed(t *testing.T) {
+	// ToolStat.Cost has always been computed and shipped; the column header
+	// promises it, so it has to be what is rendered under that heading.
+	srv, st := newTestServer(t)
+	seed(t, st, time.Now())
+	payload := dashboardPayload(t, get(t, srv, "/").Body.String())
+	tools, _ := payload["tools"].([]any)
+	if len(tools) == 0 {
+		t.Fatal("fixture produced no tool rows")
+	}
+	tool, _ := tools[0].(map[string]any)
+	if _, ok := tool["cost"]; !ok {
+		t.Error("tool rows do not carry cost")
+	}
+	if _, ok := tool["avg_seconds"]; !ok {
+		t.Error("tool rows do not carry a numeric average, so the column cannot sort")
+	}
+}
+
+func TestProjectsAreListedOncePerProjectNotOncePerAgent(t *testing.T) {
+	// The same directory used by two agents arrives from store.Projects() as two
+	// rows. The page shows one row per project, so the headline "Projects" card
+	// and the table must agree.
+	srv, st := newTestServer(t)
+	now := time.Now()
+	seed(t, st, now)
+	for i, agent := range []string{"claude", "codex"} {
+		uid := "shared-" + agent
+		sess := model.SessionWrite{
+			Session: model.Session{UID: uid, Agent: agent, Project: "/p/shared"},
+			Path:    "/logs/" + uid + ".jsonl",
+			Calls: []model.Call{{
+				SessionUID: uid, CallKey: "c", Agent: agent, Project: "/p/shared",
+				Model: "m", Time: now, TotalTokens: 10, CostUSD: float64(i + 1),
+				Priced: true,
+			}},
+		}
+		if err := st.ReplaceSession(sess); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.RecomputeSession(uid); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	payload := dashboardPayload(t, get(t, srv, "/").Body.String())
+	projects, _ := payload["projects"].([]any)
+	seen := map[string]int{}
+	var merged *map[string]any
+	for _, p := range projects {
+		row, _ := p.(map[string]any)
+		name, _ := row["name"].(string)
+		if name == "/p/shared" && merged == nil {
+			merged = &row
+		}
+		seen[name]++
+	}
+	for name, n := range seen {
+		if n > 1 {
+			t.Errorf("project %s is listed %d times", name, n)
+		}
+	}
+	if merged == nil {
+		t.Fatal("the shared project is missing from the payload")
+	}
+	// Both agents' costs belong in the one row.
+	if cost, _ := (*merged)["cost"].(float64); cost != 3 {
+		t.Errorf("merged cost = %v, want 3 (1 from claude + 2 from codex)", cost)
+	}
+	if agents, _ := (*merged)["agents"].([]any); len(agents) != 2 {
+		t.Errorf("merged row lists %d agents, want 2", len(agents))
 	}
 }
