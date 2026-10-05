@@ -158,8 +158,9 @@ func TestSessionRowsCarryEveryColumn(t *testing.T) {
 	}
 
 	// The identifying and descriptive fields.
-	if row.UID != "s1" || row.Path != "/tmp/s1" || row.Title != "title-s1" {
-		t.Errorf("descriptive fields lost: %+v", row)
+	wantPath := filepath.Join(fakeLogRoot, "s1.jsonl")
+	if row.UID != "s1" || row.Path != wantPath || row.Title != "title-s1" {
+		t.Errorf("descriptive fields lost (want path %q): %+v", wantPath, row)
 	}
 	// The aggregates. Each is a per-call constant in the fixture multiplied by
 	// the call count, and each call column has a distinct value, so a column
@@ -413,9 +414,17 @@ func introducesFullScan(t testing.TB, after, before []string) bool {
 
 // isFullScan reports whether a plan step reads a whole table rather than an
 // index.
+//
+// It keys on "SCAN <table>" with no "USING" in the step, which is the part of
+// SQLite's plan wording that has been stable: a table scan is always a SCAN, and
+// anything qualified by an index always names one. The longer phrasing around it
+// ("SEARCH" vs "SCAN", "COVERING INDEX" vs "INDEX") is not relied on here, which
+// is deliberate — see assertCoveringIndexScan in migrate_test.go for why the
+// wording matching lives in one place.
 func isFullScan(step string) bool {
+	upper := strings.ToUpper(step)
 	for _, table := range []string{"call", "tool_call", "session"} {
-		if strings.HasPrefix(step, "SCAN "+table) && !strings.Contains(step, "USING ") {
+		if strings.HasPrefix(upper, "SCAN "+table) && !strings.Contains(upper, "USING ") {
 			return true
 		}
 	}
@@ -432,13 +441,23 @@ func splitPlan(t testing.TB, line string) (string, []string) {
 	return name, strings.Split(rest, " | ")
 }
 
+// fakeLogRoot stands in for the directory an agent's logs live in.
+//
+// It is a fake rather than a real path, and deliberately not built with
+// filepath.Join from "/tmp": on Windows that yields "\tmp\<uid>", which reads
+// like a rooted path but is not one, and a reader has to work out which it is.
+// Nothing here resolves the path on disk — the session table stores whatever the
+// scanner found, and this fixture only needs a value that is distinct per uid and
+// comparable as a string.
+const fakeLogRoot = "/var/log/agent-sessions"
+
 // sessionWriteFixture is one session with every column set to a distinct value,
 // so a column read at the wrong offset in either session query cannot read as
 // correct.
 func sessionWriteFixture(uid string, calls int) model.SessionWrite {
 	sess := model.SessionWrite{
 		UID: uid, Agent: "pi", Project: "/p",
-		Path: filepath.Join("/tmp", uid), Title: "title-" + uid,
+		Path: filepath.Join(fakeLogRoot, uid+".jsonl"), Title: "title-" + uid,
 	}
 	for c := 0; c < calls; c++ {
 		sess.Calls = append(sess.Calls, model.Call{

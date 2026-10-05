@@ -657,6 +657,10 @@ func sourceSummaryOf(body string) string {
 // ---------------------------------------------------------------- burn rate
 
 func TestBurnWindowsCompareAgainstThePriorPeriod(t *testing.T) {
+	// Local time deliberately: burnWindows anchors on the local calendar day and
+	// store.Daily buckets by the call's own local date, so a UTC fixture would
+	// measure a day boundary the production path never takes. Verified across
+	// UTC, UTC+14 and a half-hour-DST zone.
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.Local)
 	daily := []store.DayBucket{
 		{Day: "2026-10-05", Cost: 10}, // today
@@ -708,6 +712,7 @@ func TestBurnWindowsCompareAgainstThePriorPeriod(t *testing.T) {
 
 func TestBurnWindowWithNoPriorSpendSaysSoRatherThanAPercentage(t *testing.T) {
 	// "No prior spend" beats "+100%": there is no percentage to compute.
+	// Local time for the same reason as the test above.
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.Local)
 	ws := burnWindows([]store.DayBucket{{Day: "2026-10-05", Cost: 3}}, now)
 	for _, c := range burnCards(ws) {
