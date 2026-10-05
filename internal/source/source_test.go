@@ -510,10 +510,7 @@ func TestClaudeThinkingBlockIsItemisedAsReasoning(t *testing.T) {
 		t.Fatalf("ReasoningTokens = %d, want > 0 for a thinking block", call.ReasoningTokens)
 	}
 	// The split must be a partition of the generated count, never more than it.
-	if call.OutputTokens+call.ReasoningTokens != 400 {
-		t.Errorf("output %d + reasoning %d != generated 400",
-			call.OutputTokens, call.ReasoningTokens)
-	}
+	checkGenerated(t, call, 400)
 	if !call.Priced {
 		t.Error("claude-opus-4-5 was not priced")
 	}
@@ -543,6 +540,7 @@ func TestClaudeWithoutThinkingHasNoReasoning(t *testing.T) {
 	if call.OutputTokens != 400 {
 		t.Errorf("OutputTokens = %d, want the full 400", call.OutputTokens)
 	}
+	checkGenerated(t, call, 400)
 }
 
 func TestClaudeReasoningNeverExceedsGenerated(t *testing.T) {
@@ -557,6 +555,11 @@ func TestClaudeReasoningNeverExceedsGenerated(t *testing.T) {
 		t.Errorf("reasoning %d / output %d, want clamped to (20, 0)",
 			call.ReasoningTokens, call.OutputTokens)
 	}
+	// The clamp has to preserve the partition, not just bound one side of it: a
+	// parser that clamped reasoning to the generated count while leaving output
+	// alone would report the same two figures above and bill 40 generated tokens
+	// for a 20-token call.
+	checkGenerated(t, call, 20)
 }
 
 func TestGeminiProjectIsRecoveredFromTheHistoryDirectory(t *testing.T) {

@@ -1,6 +1,9 @@
 package source
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tonym128/agent-cost-dashboard/internal/model"
@@ -86,6 +89,17 @@ func TestCodexDifferencesRunningTotals(t *testing.T) {
 		// for. The totals are all five figures; no single call should reach them.
 		if got.InputTokens > 56954 || got.CacheReadTokens > 42240 {
 			t.Errorf("call %d looks like a running total, not an increment: %+v", i, got)
+		}
+		// Codex reports output_tokens and reasoning_output_tokens as separate
+		// counters, so reasoning is *not* carved out of the output figure the way
+		// Anthropic's is: the parser clamps reasoning to output and stores both
+		// whole. The clamp is the invariant here, and TestCodexClampsReasoningToOutput
+		// is the fixture that exercises it; checking it on a fixture where the
+		// clamp is inactive would assert nothing.
+		if got.ReasoningTokens > got.OutputTokens {
+			t.Errorf("call %d has %d reasoning against %d output; the reasoning "+
+				"counter is separate from output in this format and must be clamped "+
+				"to it", i, got.ReasoningTokens, got.OutputTokens)
 		}
 	}
 
@@ -278,5 +292,66 @@ func TestCodexRecordsWithoutUsageAreNotCalls(t *testing.T) {
 	}
 	if len(sw.ToolCalls) != 0 {
 		t.Errorf("recorded %d tool calls, want 0: this rollout carries no tool descriptors", len(sw.ToolCalls))
+	}
+}
+
+// TestCodexClampsReasoningToOutput is the fixture the clamp needed.
+//
+// No committed rollout has a reasoning counter larger than its output counter, so
+// nothing exercised `if reasoning > output`. Removing that line — along with the
+// tautological reasoning check in checkInvariants — left the whole source package
+// green, which is how a parser storing a reasoning count bigger than the output
+// it is part of would have shipped.
+//
+// The rollout is written here rather than committed: it exists only to drive this
+// one branch, and the committed fixtures are the shapes real rollouts have.
+func TestCodexClampsReasoningToOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout-reasoning-overflow.jsonl")
+	body := strings.Join([]string{
+		`{"timestamp":"2026-05-01T10:00:00.000Z","ordinal":0,"type":"session_meta",` +
+			`"payload":{"id":"test-session-codex-overflow","cwd":"/home/testuser/project"}}`,
+		// A baseline with no reasoning, so the second event's deltas are exact.
+		`{"timestamp":"2026-05-01T10:00:05.000Z","ordinal":1,"type":"event_msg","payload":` +
+			`{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,` +
+			`"cached_input_tokens":400,"output_tokens":100,"reasoning_output_tokens":0,` +
+			`"total_tokens":1100}}}}`,
+		// The counter reports 400 reasoning against 200 output. A counter that
+		// decreases, or one that exceeds its sibling, is a bad record; the
+		// increment is clamped rather than stored as reported.
+		`{"timestamp":"2026-05-01T10:00:15.000Z","ordinal":2,"type":"event_msg","payload":` +
+			`{"type":"token_count","info":{"total_token_usage":{"input_tokens":2000,` +
+			`"cached_input_tokens":900,"output_tokens":300,"reasoning_output_tokens":400,` +
+			`"total_tokens":2300}}}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sw, _, err := NewCodexParser().Parse(path, model.ScanState{}, testPricer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkInvariants(t, sw)
+
+	if len(sw.Calls) != 1 {
+		t.Fatalf("parsed %d calls, want 1 (the baseline is not a call)", len(sw.Calls))
+	}
+	c := sw.Calls[0]
+	if got, want := c.OutputTokens, 300-100; got != want {
+		t.Errorf("output = %d, want %d (the delta of the output counter)", got, want)
+	}
+	// 400 reported against 200 of output. Storing 400 would put a reasoning
+	// count on the dashboard twice the size of the output containing it.
+	if c.ReasoningTokens != 200 {
+		t.Errorf("reasoning = %d, want clamped to the 200 of output that contains it",
+			c.ReasoningTokens)
+	}
+	// And the clamp must not invent or lose tokens: the two stored figures are
+	// still the two halves of the counters the log states.
+	checkGenerated(t, c, 300-100+200)
+	// A negative figure would flow into every total; the non-negative loop in
+	// checkInvariants covers it, and this states why it matters here.
+	if c.TotalTokens < 0 {
+		t.Errorf("total = %d", c.TotalTokens)
 	}
 }
