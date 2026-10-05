@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tonym/agent-cost-dashboard/internal/model"
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
 )
 
 func testPricer(t *testing.T) *Pricer {

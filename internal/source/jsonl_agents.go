@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tonym/agent-cost-dashboard/internal/model"
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
 )
 
 // jsonlParser is the shared shape of the four agents that write one JSON object

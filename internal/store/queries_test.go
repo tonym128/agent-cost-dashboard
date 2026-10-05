@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tonym/agent-cost-dashboard/internal/model"
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
 )
 
 func newFilterStore(t *testing.T) (*Store, func()) {

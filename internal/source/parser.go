@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tonym/agent-cost-dashboard/internal/model"
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
 )
 
 // Parser extracts one session's worth of activity from one source file.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tonym/agent-cost-dashboard/internal/store"
+	"github.com/tonym128/agent-cost-dashboard/internal/store"
 )
 
 // The JSON below is the contract the front end reads. Field names match what

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tonym/agent-cost-dashboard/internal/model"
-	"github.com/tonym/agent-cost-dashboard/internal/source"
-	"github.com/tonym/agent-cost-dashboard/internal/store"
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
+	"github.com/tonym128/agent-cost-dashboard/internal/source"
+	"github.com/tonym128/agent-cost-dashboard/internal/store"
 )
 
 func newTestStore(t *testing.T) *store.Store {

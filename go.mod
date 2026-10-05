@@ -1,4 +1,4 @@
-module github.com/tonym/agent-cost-dashboard
+module github.com/tonym128/agent-cost-dashboard
 
 go 1.27.1
 

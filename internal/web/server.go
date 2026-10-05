@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tonym/agent-cost-dashboard/internal/store"
+	"github.com/tonym128/agent-cost-dashboard/internal/store"
 )
 
 //go:embed assets/dashboard.css assets/dashboard.js

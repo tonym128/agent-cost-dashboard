@@ -21,9 +21,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tonym/agent-cost-dashboard/internal/model"
-	"github.com/tonym/agent-cost-dashboard/internal/source"
-	"github.com/tonym/agent-cost-dashboard/internal/store"
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
+	"github.com/tonym128/agent-cost-dashboard/internal/source"
+	"github.com/tonym128/agent-cost-dashboard/internal/store"
 )
 
 // Source describes where one agent keeps its session logs.

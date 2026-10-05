@@ -9,7 +9,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/tonym/agent-cost-dashboard/internal/model"
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
 	_ "modernc.org/sqlite"
 )
 

@@ -21,10 +21,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tonym/agent-cost-dashboard/internal/scan"
-	"github.com/tonym/agent-cost-dashboard/internal/source"
-	"github.com/tonym/agent-cost-dashboard/internal/store"
-	"github.com/tonym/agent-cost-dashboard/internal/web"
+	"github.com/tonym128/agent-cost-dashboard/internal/scan"
+	"github.com/tonym128/agent-cost-dashboard/internal/source"
+	"github.com/tonym128/agent-cost-dashboard/internal/store"
+	"github.com/tonym128/agent-cost-dashboard/internal/web"
 )
 
 func main() {
