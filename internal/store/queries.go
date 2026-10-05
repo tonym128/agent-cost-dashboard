@@ -534,6 +534,34 @@ type SessionRow struct {
 	Orphaned bool
 }
 
+// sessionColumns is the column list a session row is read as, in the order
+// scanSessionRow expects.
+//
+// It is a constant rather than text repeated at each site because there are two
+// statements that produce a session row and the web layer renders all 22 fields
+// of one: a column added to only one of them is a page that quietly shows a
+// zero, and nothing else would notice.
+const sessionColumns = `uid, agent, project, path, title, first_ts, last_ts,
+	wall_seconds, calls, input_tokens, output_tokens,
+	cache_read_tokens, cache_write_tokens, reasoning_tokens,
+	total_tokens, cost_usd, llm_seconds, tool_seconds,
+	tool_calls, tool_errors, orphaned`
+
+// scanSessionRow reads one row of sessionColumns.
+func scanSessionRow(rows *sql.Rows) (SessionRow, error) {
+	var r SessionRow
+	var orphaned int
+	if err := rows.Scan(&r.UID, &r.Agent, &r.Project, &r.Path, &r.Title,
+		&r.FirstTS, &r.LastTS, &r.WallSeconds, &r.Calls, &r.InputTokens,
+		&r.OutputTokens, &r.CacheReadTokens, &r.CacheWriteTokens,
+		&r.ReasoningTokens, &r.TotalTokens, &r.Cost, &r.LLMSeconds,
+		&r.ToolSeconds, &r.ToolCalls, &r.ToolErrors, &orphaned); err != nil {
+		return r, err
+	}
+	r.Orphaned = orphaned != 0
+	return r, nil
+}
+
 // Sessions returns sessions, newest first, with a cap.
 func (s *Store) Sessions(ctx context.Context, f Filter, limit int) ([]SessionRow, error) {
 	where, args := f.whereSession("s")
@@ -542,11 +570,7 @@ func (s *Store) Sessions(ctx context.Context, f Filter, limit int) ([]SessionRow
 	}
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.uid, s.agent, s.project, s.path, s.title, s.first_ts, s.last_ts,
-		       s.wall_seconds, s.calls, s.input_tokens, s.output_tokens,
-		       s.cache_read_tokens, s.cache_write_tokens, s.reasoning_tokens,
-		       s.total_tokens, s.cost_usd, s.llm_seconds, s.tool_seconds,
-		       s.tool_calls, s.tool_errors, s.orphaned
+		SELECT `+sessionColumns+`
 		FROM session s`+where+`
 		ORDER BY s.last_ts DESC LIMIT ?`, args...)
 	if err != nil {
@@ -555,33 +579,46 @@ func (s *Store) Sessions(ctx context.Context, f Filter, limit int) ([]SessionRow
 	defer rows.Close()
 	var out []SessionRow
 	for rows.Next() {
-		var r SessionRow
-		var orphaned int
-		if err := rows.Scan(&r.UID, &r.Agent, &r.Project, &r.Path, &r.Title,
-			&r.FirstTS, &r.LastTS, &r.WallSeconds, &r.Calls, &r.InputTokens,
-			&r.OutputTokens, &r.CacheReadTokens, &r.CacheWriteTokens,
-			&r.ReasoningTokens, &r.TotalTokens, &r.Cost, &r.LLMSeconds,
-			&r.ToolSeconds, &r.ToolCalls, &r.ToolErrors, &orphaned); err != nil {
+		r, err := scanSessionRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		r.Orphaned = orphaned != 0
 		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
 // Session looks up one session by id.
+//
+// It is one seek on the primary key, not a filtered copy of the whole table. The
+// previous shape called Sessions(ctx, Filter{}, 0), which means every visit to a
+// single session's page ordered and materialised up to 5000 session rows — 22
+// fields each — and then searched the resulting slice in Go. The cost of opening
+// one session was therefore the cost of listing the database, growing with
+// history rather than with the answer, and paid on a page load.
+//
+// Two behaviours change with it, both toward correctness. A session older than
+// the 5000-row listing cap is now found rather than reported as unknown, which
+// is a bug the old shape had and this cannot: the row is in the table, the
+// lookup simply never saw it. And a miss no longer reads any row at all.
 func (s *Store) Session(ctx context.Context, uid string) (SessionRow, bool, error) {
-	rows, err := s.Sessions(ctx, Filter{}, 0)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+sessionColumns+` FROM session WHERE uid = ?`, uid)
 	if err != nil {
-		return SessionRow{}, false, err
+		return SessionRow{}, false, fmt.Errorf("session %s: %w", uid, err)
 	}
-	for _, r := range rows {
-		if r.UID == uid {
-			return r, true, nil
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return SessionRow{}, false, fmt.Errorf("session %s: %w", uid, err)
 		}
+		return SessionRow{}, false, nil
 	}
-	return SessionRow{}, false, nil
+	r, err := scanSessionRow(rows)
+	if err != nil {
+		return SessionRow{}, false, fmt.Errorf("session %s: %w", uid, err)
+	}
+	return r, true, nil
 }
 
 // Facets are every filterable value the database holds.
