@@ -1,0 +1,90 @@
+{
+  "comment": "Sanitised OpenCode fixture. Shapes copied from the real opencode.db schema (session/message/part), every value invented. Built into a SQLite file by buildOpenCodeDB in fixture_sqlite_test.go so the schema the parser reads is visible in code rather than hidden in a binary blob.",
+  "sessions": [
+    {
+      "id": "ses_test0000000001",
+      "directory": "/home/testuser/project",
+      "title": "Fix the token assertion",
+      "agent": "build",
+      "model": "{\"id\":\"claude-sonnet-4-6\",\"providerID\":\"anthropic\"}",
+      "time_created": 1779976545969,
+      "time_updated": 1779976548042,
+      "messages": [
+        {
+          "id": "msg_user0000000001",
+          "time_created": 1779976545991,
+          "time_updated": 1779976545991,
+          "data": {"role": "user", "time": {"created": 1779976545991}, "agent": "build",
+                   "model": {"providerID": "anthropic", "modelID": "claude-sonnet-4-6"}},
+          "parts": [
+            {"type": "text", "text": "The token assertion fails. Fix the test, not the fixture."}
+          ]
+        },
+        {
+          "id": "msg_assistant000001",
+          "time_created": 1779976546010,
+          "time_updated": 1779976548026,
+          "data": {"parentID": "msg_user0000000001", "role": "assistant", "mode": "build",
+                   "agent": "build", "cost": 0,
+                   "tokens": {"total": 40105, "input": 24000, "output": 4210, "reasoning": 1895,
+                              "cache": {"write": 1200, "read": 18000}},
+                   "modelID": "claude-sonnet-4-6", "providerID": "anthropic",
+                   "time": {"created": 1779976546010, "completed": 1779976548025},
+                   "finish": "stop"},
+          "parts": [
+            {"type": "step-start"},
+            {"type": "reasoning", "text": "The fixture is the safety net, so the assertion is what has to change.",
+             "time": {"start": 1779976547010, "end": 1779976547510}},
+            {"type": "tool", "callID": "call_0001", "tool": "bash",
+             "state": {"status": "completed", "input": {"command": "go test ./internal/source/"},
+                       "output": "ok", "time": {"start": 1779976547600, "end": 1779976547800}}},
+            {"type": "text", "text": "Rewrote the assertion to check an invariant.",
+             "time": {"start": 1779976547850, "end": 1779976548000}},
+            {"type": "step-finish", "reason": "stop",
+             "tokens": {"total": 40105, "input": 24000, "output": 4210, "reasoning": 1895,
+                        "cache": {"write": 1200, "read": 18000}},
+             "cost": 0}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ses_test0000000002",
+      "directory": "/home/testuser/other-project",
+      "title": "",
+      "agent": "plan",
+      "model": "claude-opus-4-8",
+      "time_created": 1779976600000,
+      "time_updated": 1779976660000,
+      "messages": [
+        {
+          "id": "msg_assistant000002",
+          "time_created": 1779976600100,
+          "time_updated": 1779976659999,
+          "data": {"role": "assistant", "mode": "plan", "agent": "plan", "cost": 0,
+                   "tokens": {"total": 12000, "input": 11000, "output": 500, "reasoning": 500,
+                              "cache": {"write": 0, "read": 0}},
+                   "modelID": "claude-opus-4-8",
+                   "time": {"created": 1779976600100, "completed": 1779976659900},
+                   "finish": "stop"},
+          "parts": [
+            {"type": "tool", "callID": "call_0002", "tool": "invalid",
+             "state": {"status": "error", "error": "could not parse input",
+                       "input": {"tool": "read", "filePath": "/home/testuser/other-project/go.mod"},
+                       "time": {"start": 1779976610000, "end": 1779976610400}}},
+            {"type": "text", "text": "The model column here is a bare string, not a JSON object."}
+          ]
+        },
+        {
+          "id": "msg_assistant000003",
+          "time_created": 1779976660000,
+          "time_updated": 1779976660000,
+          "data": {"role": "assistant", "agent": "plan", "cost": 0, "time": {"created": 1779976660000}},
+          "parts": [
+            {"type": "text", "text": "An assistant message with no tokens block contributes nothing."}
+          ]
+        }
+      ]
+    }
+  ]
+}

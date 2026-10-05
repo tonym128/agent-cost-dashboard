@@ -1,0 +1,1062 @@
+{
+ "comment": "Sanitised Antigravity fixture. Step types, status codes, field numbers and usage counters come from a real conversation database; every identifier, payload and path has been stripped or replaced. Built into a SQLite file by buildAntigravityDB in fixture_sqlite_test.go, which encodes the protobuf metadata the parser reads, so a change to the wire format fails a test rather than silently zeroing a token count.",
+ "workspace": "/home/testuser/project",
+ "epoch": 1779976545,
+ "steps": [
+  {
+   "step_type": 14,
+   "status": 3,
+   "start": 0,
+   "duration": null
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 0,
+   "duration": 2,
+   "usage": {
+    "model": 1319,
+    "input": 13482,
+    "output": 183,
+    "cache_read": 0,
+    "reasoning": 103
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 7,
+   "start": 2,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 2,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 13759,
+    "output": 166,
+    "cache_read": 0,
+    "reasoning": 83
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 5,
+   "duration": 3,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 9,
+   "duration": 2,
+   "usage": {
+    "model": 1319,
+    "input": 17099,
+    "output": 104,
+    "cache_read": 0,
+    "reasoning": 24
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 11,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 11,
+   "duration": 2,
+   "usage": {
+    "model": 1319,
+    "input": 5239,
+    "output": 87,
+    "cache_read": 12202,
+    "reasoning": 13
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 13,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 13,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 3184,
+    "output": 534,
+    "cache_read": 16273,
+    "reasoning": 455
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 16,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 16,
+   "duration": 2,
+   "usage": {
+    "model": 1319,
+    "input": 5734,
+    "output": 193,
+    "cache_read": 16278,
+    "reasoning": 68
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 18,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 18,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 23883,
+    "output": 353,
+    "cache_read": 0,
+    "reasoning": 265
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 21,
+   "duration": 4,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 25,
+   "duration": 5,
+   "usage": {
+    "model": 1319,
+    "input": 4215,
+    "output": 610,
+    "cache_read": 20345,
+    "reasoning": 428
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 30,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 30,
+   "duration": 5,
+   "usage": {
+    "model": 1319,
+    "input": 5261,
+    "output": 431,
+    "cache_read": 20343,
+    "reasoning": 358
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 35,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 35,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 2838,
+    "output": 168,
+    "cache_read": 24412,
+    "reasoning": 89
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 38,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 38,
+   "duration": 6,
+   "usage": {
+    "model": 1319,
+    "input": 4186,
+    "output": 1094,
+    "cache_read": 24412,
+    "reasoning": 1002
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 44,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 44,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 5370,
+    "output": 104,
+    "cache_read": 24410,
+    "reasoning": 18
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 47,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 47,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 5643,
+    "output": 145,
+    "cache_read": 24403,
+    "reasoning": 60
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 51,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 51,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 2269,
+    "output": 194,
+    "cache_read": 28466,
+    "reasoning": 94
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 54,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 54,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 2830,
+    "output": 830,
+    "cache_read": 28460,
+    "reasoning": 752
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 58,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 58,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 4428,
+    "output": 196,
+    "cache_read": 28462,
+    "reasoning": 124
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 61,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 61,
+   "duration": 5,
+   "usage": {
+    "model": 1319,
+    "input": 5443,
+    "output": 1127,
+    "cache_read": 28460,
+    "reasoning": 979
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 66,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 66,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 2603,
+    "output": 179,
+    "cache_read": 32525,
+    "reasoning": 24
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 69,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 69,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 2887,
+    "output": 495,
+    "cache_read": 32518,
+    "reasoning": 331
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 73,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 73,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 3485,
+    "output": 219,
+    "cache_read": 32513,
+    "reasoning": 36
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 76,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 76,
+   "duration": 6,
+   "usage": {
+    "model": 1319,
+    "input": 4029,
+    "output": 1309,
+    "cache_read": 32508,
+    "reasoning": 1046
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 82,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 82,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 5426,
+    "output": 366,
+    "cache_read": 32509,
+    "reasoning": 238
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 85,
+   "duration": 3,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 88,
+   "duration": 5,
+   "usage": {
+    "model": 1319,
+    "input": 2072,
+    "output": 659,
+    "cache_read": 36568,
+    "reasoning": 586
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 93,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 93,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 2924,
+    "output": 152,
+    "cache_read": 36565,
+    "reasoning": 74
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 96,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 96,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 6575,
+    "output": 582,
+    "cache_read": 36582,
+    "reasoning": 430
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 100,
+   "duration": 1,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 101,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 23508,
+    "output": 299,
+    "cache_read": 20321,
+    "reasoning": 225
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 105,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 105,
+   "duration": 2,
+   "usage": {
+    "model": 1319,
+    "input": 3581,
+    "output": 182,
+    "cache_read": 40636,
+    "reasoning": 88
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 107,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 107,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 3858,
+    "output": 99,
+    "cache_read": 40629,
+    "reasoning": 19
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 110,
+   "duration": 1,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 111,
+   "duration": 6,
+   "usage": {
+    "model": 1319,
+    "input": 6670,
+    "output": 268,
+    "cache_read": 40640,
+    "reasoning": 192
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 117,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 117,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 3073,
+    "output": 185,
+    "cache_read": 44698,
+    "reasoning": 78
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 120,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 120,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 21956,
+    "output": 263,
+    "cache_read": 40705,
+    "reasoning": 123
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 124,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 124,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 2152,
+    "output": 236,
+    "cache_read": 61051,
+    "reasoning": 36
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 127,
+   "duration": 1,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 128,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 5820,
+    "output": 233,
+    "cache_read": 61063,
+    "reasoning": 25
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 131,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 131,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 3671,
+    "output": 189,
+    "cache_read": 65136,
+    "reasoning": 92
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 134,
+   "duration": 1,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 135,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 3956,
+    "output": 90,
+    "cache_read": 65128,
+    "reasoning": 15
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 138,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 138,
+   "duration": 19,
+   "usage": {
+    "model": 1319,
+    "input": 7104,
+    "output": 454,
+    "cache_read": 65137,
+    "reasoning": 352
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 157,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 157,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 3647,
+    "output": 348,
+    "cache_read": 69202,
+    "reasoning": 259
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 161,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 161,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 4747,
+    "output": 235,
+    "cache_read": 69199,
+    "reasoning": 143
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 165,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 165,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 5094,
+    "output": 823,
+    "cache_read": 69192,
+    "reasoning": 454
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 169,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 169,
+   "duration": 6,
+   "usage": {
+    "model": 1319,
+    "input": 2542,
+    "output": 1127,
+    "cache_read": 73322,
+    "reasoning": 1041
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 175,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 175,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 3946,
+    "output": 139,
+    "cache_read": 73319,
+    "reasoning": 68
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 178,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 178,
+   "duration": 5,
+   "usage": {
+    "model": 1319,
+    "input": 5619,
+    "output": 976,
+    "cache_read": 73319,
+    "reasoning": 537
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 183,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 183,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 3054,
+    "output": 278,
+    "cache_read": 77391,
+    "reasoning": 10
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 187,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 187,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 3428,
+    "output": 93,
+    "cache_read": 77383,
+    "reasoning": 20
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 190,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 190,
+   "duration": 5,
+   "usage": {
+    "model": 1319,
+    "input": 6208,
+    "output": 446,
+    "cache_read": 77388,
+    "reasoning": 188
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 195,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 195,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 2691,
+    "output": 76,
+    "cache_read": 81455,
+    "reasoning": 17
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 198,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 198,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 5019,
+    "output": 322,
+    "cache_read": 81458,
+    "reasoning": 178
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 202,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 202,
+   "duration": 4,
+   "usage": {
+    "model": 1319,
+    "input": 5945,
+    "output": 240,
+    "cache_read": 81454,
+    "reasoning": 168
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 206,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 206,
+   "duration": 3,
+   "usage": {
+    "model": 1319,
+    "input": 2317,
+    "output": 141,
+    "cache_read": 85519,
+    "reasoning": 45
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 209,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 209,
+   "duration": 5,
+   "usage": {
+    "model": 1319,
+    "input": 4746,
+    "output": 604,
+    "cache_read": 85523,
+    "reasoning": 501
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 214,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 214,
+   "duration": 5,
+   "usage": {
+    "model": 1319,
+    "input": 5444,
+    "output": 787,
+    "cache_read": 85517,
+    "reasoning": 730
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 3,
+   "start": 219,
+   "duration": 0,
+   "tool": "run_command"
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 224,
+   "duration": 2,
+   "truncated_usage": {
+    "model": 1319,
+    "input": 999999,
+    "output": 4242,
+    "cache_read": 0,
+    "reasoning": 0
+   }
+  },
+  {
+   "step_type": 15,
+   "status": 3,
+   "start": 228,
+   "duration": 1,
+   "varint_overrun": {
+    "model": 1319
+   }
+  },
+  {
+   "step_type": 132,
+   "status": 7,
+   "start": 230,
+   "duration": 1,
+   "tool_without_name": true
+  }
+ ]
+}
