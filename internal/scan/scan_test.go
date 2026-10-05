@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1219,4 +1220,108 @@ func appendOpenCodeMessage(t *testing.T, path, sessionID string, at int64) error
 		`{"role":"assistant","tokens":{"input":7,"output":8,"reasoning":0},`+
 			`"modelID":"claude-sonnet-4-6"}`)
 	return err
+}
+
+// DefaultSources was 0% covered and is what cmd/dashd calls to decide what to
+// scan, so the six locations it returns were never executed.
+
+// TestDefaultSourcesCoversEveryAgentItKnowsAbout checks the list is complete and
+// that each root is the exported one.
+//
+// Two directions, because either can break alone. A source missing from the list
+// means an agent's logs are never read; a root that disagrees with
+// HomeRelativeRoots means the page's hint and the walk point at different places,
+// which is the defect the export exists to prevent.
+func TestDefaultSourcesCoversEveryAgentItKnowsAbout(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "home", "tester")
+	sources, openCodeDB := DefaultSources(home)
+
+	byAgent := map[string]Source{}
+	for _, s := range sources {
+		byAgent[s.Agent] = s
+	}
+	for agent, rel := range HomeRelativeRoots {
+		want := filepath.Join(home, rel)
+		if agent == model.AgentOpencode {
+			if openCodeDB != want {
+				t.Errorf("the OpenCode database is %q, want %q from HomeRelativeRoots",
+					openCodeDB, want)
+			}
+			if _, walked := byAgent[agent]; walked {
+				t.Errorf("%s is in both the tree sources and the OpenCode database "+
+					"path: it would be scanned twice per pass", agent)
+			}
+			continue
+		}
+		src, ok := byAgent[agent]
+		if !ok {
+			t.Errorf("%s is in HomeRelativeRoots but DefaultSources does not return "+
+				"a source for it, so its logs are never read", agent)
+			continue
+		}
+		if src.Root != want {
+			t.Errorf("%s root = %q, want %q: the scanner and the page's hint would "+
+				"point at different places", agent, src.Root, want)
+		}
+		if src.parserFor == nil {
+			t.Errorf("%s has no parser: a discovered file would be skipped silently", agent)
+		}
+		if got := src.parserFor().Agent(); got != agent {
+			t.Errorf("%s's parser reports agent %q", agent, got)
+		}
+		if src.Ext == "" {
+			t.Errorf("%s matches no file extension, so it discovers nothing", agent)
+		}
+	}
+	if len(sources) != len(HomeRelativeRoots)-1 {
+		t.Errorf("DefaultSources returned %d tree sources, want %d (one per agent "+
+			"except OpenCode, which is a database)", len(sources), len(HomeRelativeRoots)-1)
+	}
+}
+
+// TestDefaultSourcesHonoursTheHomeArgument is why the roots are joined rather
+// than hardcoded: -home exists so a machine whose logs live elsewhere is
+// readable, and an absolute path baked into the table would ignore it.
+func TestDefaultSourcesHonoursTheHomeArgument(t *testing.T) {
+	for _, home := range []string{"/home/tester", "/mnt/logs", "/"} {
+		sources, openCodeDB := DefaultSources(home)
+		for _, s := range sources {
+			if !strings.HasPrefix(s.Root, home) {
+				t.Errorf("with -home %q, %s is rooted at %q", home, s.Agent, s.Root)
+			}
+			if strings.Contains(s.Root, "~") {
+				t.Errorf("with -home %q, %s is rooted at %q: a tilde is not expanded",
+					home, s.Agent, s.Root)
+			}
+		}
+		if !strings.HasPrefix(openCodeDB, home) {
+			t.Errorf("with -home %q, the OpenCode database is %q", home, openCodeDB)
+		}
+	}
+}
+
+// TestHomeRelativeRootIsUnknownForAnUnknownAgent keeps the lookup honest: a name
+// this build cannot read must not resolve to a path that looks plausible.
+func TestHomeRelativeRootIsUnknownForAnUnknownAgent(t *testing.T) {
+	for _, agent := range []string{
+		model.AgentPi, model.AgentClaude, model.AgentCodex,
+		model.AgentGemini, model.AgentAgy, model.AgentOpencode,
+	} {
+		rel, ok := HomeRelativeRoot(agent)
+		if !ok {
+			t.Errorf("%s has no log location; every agent the parser can read needs "+
+				"one, or the source panel cannot offer a path", agent)
+			continue
+		}
+		if rel == "" {
+			t.Errorf("%s's log location is empty", agent)
+		}
+		if strings.HasPrefix(rel, "/") {
+			t.Errorf("%s's log location %q is absolute; it is relative to the home "+
+				"directory so that -home applies", agent, rel)
+		}
+	}
+	if _, ok := HomeRelativeRoot("not-an-agent"); ok {
+		t.Error("an unknown agent resolved to a log location")
+	}
 }
