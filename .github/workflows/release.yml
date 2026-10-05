@@ -70,13 +70,42 @@ jobs:
           grep -F 'cost' /tmp/out
 
       - name: The healthcheck endpoint answers
+        # The image binds 127.0.0.1 INSIDE the container, and Docker's port
+        # publishing forwards to the container's external interface, so `-p`
+        # alone reaches nothing. Publishing is a deliberate two-part opt-in —
+        # an explicit non-loopback bind AND a token — which is what this step
+        # does. A fixed token is right here: it is a throwaway value in a
+        # throwaway container, and a token generated per run would make the
+        # curl below a second thing that can fail.
         run: |
           set -euo pipefail
+          TOKEN=verify-token-not-a-secret
           docker run -d --name dashd-verify -p 127.0.0.1:8753:8753 \
-            -v dashd-verify-data:/var/lib/dashd dashd:verify
+            -v dashd-verify-data:/var/lib/dashd dashd:verify \
+            serve-and-scan -addr 0.0.0.0:8753 -auth-token "$TOKEN"
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8753/healthz >/dev/null; then
+            if curl -fsS -H "Authorization: Bearer $TOKEN" \
+                http://127.0.0.1:8753/healthz >/dev/null; then
               echo "healthz ok after ${i}s"
+              # The published port is authenticated, so the token has to work
+              # and its absence has to fail. Asserting only healthz would pass
+              # against a dashboard publishing every project path to anyone who
+              # can reach the port.
+              code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8753/)
+              if [ "$code" != "401" ]; then
+                echo "::error::/ served $code with no token; expected 401"
+                docker rm -f dashd-verify || true
+                exit 1
+              fi
+              code=$(curl -s -o /dev/null -w '%{http_code}' \
+                -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8753/)
+              if [ "$code" != "200" ]; then
+                echo "::error::/ served $code with the token; expected 200"
+                docker logs dashd-verify || true
+                docker rm -f dashd-verify || true
+                exit 1
+              fi
+              echo "auth ok: 401 without the token, 200 with it"
               docker rm -f dashd-verify
               exit 0
             fi
