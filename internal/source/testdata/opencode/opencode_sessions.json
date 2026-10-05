@@ -26,7 +26,7 @@
           "time_updated": 1779976548026,
           "data": {"parentID": "msg_user0000000001", "role": "assistant", "mode": "build",
                    "agent": "build", "cost": 0,
-                   "tokens": {"total": 40105, "input": 24000, "output": 4210, "reasoning": 1895,
+                   "tokens": {"total": 49305, "input": 24000, "output": 4210, "reasoning": 1895,
                               "cache": {"write": 1200, "read": 18000}},
                    "modelID": "claude-sonnet-4-6", "providerID": "anthropic",
                    "time": {"created": 1779976546010, "completed": 1779976548025},
@@ -41,7 +41,7 @@
             {"type": "text", "text": "Rewrote the assertion to check an invariant.",
              "time": {"start": 1779976547850, "end": 1779976548000}},
             {"type": "step-finish", "reason": "stop",
-             "tokens": {"total": 40105, "input": 24000, "output": 4210, "reasoning": 1895,
+             "tokens": {"total": 49305, "input": 24000, "output": 4210, "reasoning": 1895,
                         "cache": {"write": 1200, "read": 18000}},
              "cost": 0}
           ]
