@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -459,6 +460,102 @@ func TestHeadFingerprintRejectsAChangedHead(t *testing.T) {
 	os.WriteFile(path, []byte(`{"n":9}`+"\n"+`{"n":2}`+"\n"), 0o600)
 	if HeadMatches(path, hash, length) {
 		t.Error("a rewritten head still matched")
+	}
+}
+
+// ---------------------------------------------------------------- Claude
+
+// claudeAssistant writes a one-record Claude Code transcript — one JSON object
+// on one line, as the real log has it — and returns the single call it yields.
+func claudeCall(t *testing.T, msg string) model.Call {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	line := `{"type":"assistant","sessionId":"s1","cwd":"/home/u/p","uuid":"u1",` +
+		`"timestamp":"2026-05-01T10:00:00Z","message":` + msg + "}\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pricer, err := NewPricer("../../models.json", "manual_pricing.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, _, err := NewClaudeParser().Parse(path, model.ScanState{}, pricer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sw.Calls) != 1 {
+		t.Fatalf("parsed %d calls, want 1", len(sw.Calls))
+	}
+	return sw.Calls[0]
+}
+
+// thinkingBody is a realistic extended-thinking block: a few hundred characters
+// of the deliberation Claude Code actually writes.
+var thinkingBody = "The user wants the failing test replaced rather than the " +
+	"fixture adjusted, because the fixture is the safety net. Check whether the " +
+	"pricer can be constructed with no dump at all before changing anything " +
+	"else, since a test that cannot build its subject proves nothing."
+
+func TestClaudeThinkingBlockIsItemisedAsReasoning(t *testing.T) {
+	// Anthropic bills thinking at the output rate and does not report it
+	// separately, so without this the tokens land invisibly inside output and a
+	// $14 session cannot be explained.
+	call := claudeCall(t, `{"model":"claude-opus-4-5",`+
+		`"usage":{"input_tokens":120,"output_tokens":400,`+
+		`"cache_read_input_tokens":8000,"cache_creation_input_tokens":2000},`+
+		`"content":[{"type":"thinking","thinking":`+strconv.Quote(thinkingBody)+`},`+
+		`{"type":"text","text":"Understood."}]}`)
+
+	if call.ReasoningTokens <= 0 {
+		t.Fatalf("ReasoningTokens = %d, want > 0 for a thinking block", call.ReasoningTokens)
+	}
+	// The split must be a partition of the generated count, never more than it.
+	if call.OutputTokens+call.ReasoningTokens != 400 {
+		t.Errorf("output %d + reasoning %d != generated 400",
+			call.OutputTokens, call.ReasoningTokens)
+	}
+	if !call.Priced {
+		t.Error("claude-opus-4-5 was not priced")
+	}
+	// Thinking is billed as output, so the cost must be the whole generated
+	// count at the output rate — not just the visible remainder.
+	rates, _ := testPricer(t).Resolve("claude-opus-4-5")
+	want := 120/1e6*rates.Input + 400/1e6*rates.Output +
+		8000/1e6*rates.CacheRead + 2000/1e6*rates.CacheWrite
+	if diff := call.CostUSD - want; diff > 0.001 || diff < -0.001 {
+		t.Errorf("cost $%.6f, want $%.6f (whole generated count billed)", call.CostUSD, want)
+	}
+}
+
+func TestClaudeWithoutThinkingHasNoReasoning(t *testing.T) {
+	// The common case, and the one that must not regress into a guess: no
+	// thinking block and no reasoning field means zero, not an estimate.
+	call := claudeCall(t, `{"model":"claude-opus-4-5",`+
+		`"usage":{"input_tokens":120,"output_tokens":400,`+
+		`"cache_read_input_tokens":8000,"cache_creation_input_tokens":2000},`+
+		`"content":[{"type":"text","text":"Done."},`+
+		`{"type":"tool_use","name":"Bash","input":{"command":"go test ./..."}}]}`)
+
+	if call.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0 for a message with no thinking block",
+			call.ReasoningTokens)
+	}
+	if call.OutputTokens != 400 {
+		t.Errorf("OutputTokens = %d, want the full 400", call.OutputTokens)
+	}
+}
+
+func TestClaudeReasoningNeverExceedsGenerated(t *testing.T) {
+	// A blob whose thinking dwarfs the reported output is a bad record; letting
+	// the larger number through would put a token count into the dashboard that
+	// is bigger than the total it is part of.
+	call := claudeCall(t, `{"model":"claude-opus-4-5",`+
+		`"usage":{"input_tokens":10,"output_tokens":20,"reasoning_tokens":9000},`+
+		`"content":[{"type":"text","text":"ok"}]}`)
+
+	if call.ReasoningTokens != 20 || call.OutputTokens != 0 {
+		t.Errorf("reasoning %d / output %d, want clamped to (20, 0)",
+			call.ReasoningTokens, call.OutputTokens)
 	}
 }
 
