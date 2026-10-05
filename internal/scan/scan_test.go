@@ -2,6 +2,7 @@ package scan
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -734,4 +735,488 @@ func TestChangedFilesAreNotStarvedByThePerPassBudget(t *testing.T) {
 			t.Fatalf("pass %d: %d of %d sessions stored", pass, got.Sessions, files)
 		}
 	}
+}
+
+// -------------------------------------------------------------- background pass
+
+// The background half of the process: Run, Status, and the OpenCode scan path.
+// All of it was 0% covered, and Run is what cmd/dashd actually calls — so the
+// entry point the binary uses had no test at all.
+
+// TestRunPassesImmediatelyAndStopsOnCancellation covers the contract Run has:
+// one pass before the first tick, then one per tick, then a clean return when the
+// context is cancelled.
+//
+// The immediate first pass is the point of the design comment above Run: the
+// database must be populated before the first request rather than after the first
+// tick, and a test that only waits for a tick would not notice its removal.
+func TestRunPassesImmediatelyAndStopsOnCancellation(t *testing.T) {
+	root := t.TempDir()
+	writeJSONL(t, filepath.Join(root, "s.jsonl"),
+		`{"type":"session","id":"s1","cwd":"/tmp/p"}`,
+		`{"type":"message","timestamp":"2026-05-01T00:00:05Z","id":"m1","message":{"role":"assistant","model":"m","usage":{"input":5,"output":5}}}`,
+	)
+	st := newTestStore(t)
+	sc := newScanner(t, st, root)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		sc.Run(ctx, 10*time.Millisecond)
+	}()
+
+	// The first pass runs before Run blocks on its ticker, so polling for the
+	// call is enough; no sleep-and-hope.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		totals, err := st.Totals(context.Background(), store.Filter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if totals.Calls > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-stopped
+			t.Fatal("Run never performed its initial pass: the database is empty 10s " +
+				"after it started, so a reload before the first tick shows nothing")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// And the pass status is visible to the endpoint that reports it.
+	lastRun, running := sc.Status()
+	if lastRun.IsZero() {
+		t.Error("Status reports no last-run time after a pass")
+	}
+	if !running {
+		// Racy by nature: the pass may have finished between the poll and here.
+		t.Log("Status reported not-running, which is correct if the pass had " +
+			"already completed")
+	}
+
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return within 10s of its context being cancelled: the " +
+			"background loop is what a SIGTERM has to interrupt")
+	}
+
+	// After Run returns, the status must report a last-run time and not running.
+	// A shutdown that leaves `running` set would have the health endpoint claim a
+	// scan is in progress for the life of the process.
+	lastRun, running = sc.Status()
+	if lastRun.IsZero() {
+		t.Error("Status reports no last-run time after Run returned")
+	}
+	if running {
+		t.Error("Status still reports a pass in progress after Run returned")
+	}
+}
+
+// TestRunDefaultsANonPositiveInterval covers the guard above the ticker.
+//
+// A zero or negative interval panics in time.NewTicker, and Run is what the CLI
+// calls with a user-supplied -interval, so a bad value there must not take the
+// process down at startup.
+func TestRunDefaultsANonPositiveInterval(t *testing.T) {
+	root := t.TempDir()
+	writeJSONL(t, filepath.Join(root, "s.jsonl"),
+		`{"type":"session","id":"s1","cwd":"/tmp/p"}`,
+		`{"type":"message","timestamp":"2026-05-01T00:00:05Z","id":"m1","message":{"role":"assistant","model":"m","usage":{"input":5,"output":5}}}`,
+	)
+	for _, every := range []time.Duration{0, -time.Second} {
+		t.Run(every.String(), func(t *testing.T) {
+			st := newTestStore(t)
+			sc := newScanner(t, st, root)
+			ctx, cancel := context.WithCancel(context.Background())
+			stopped := make(chan struct{})
+			go func() {
+				defer close(stopped)
+				// A panic here would take the test process down rather than
+				// failing, which is what the guard prevents.
+				sc.Run(ctx, every)
+			}()
+
+			cancel()
+			select {
+			case <-stopped:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("Run(%v) did not return after cancellation", every)
+			}
+		})
+	}
+}
+
+// TestRunOnceReportsAFailingPassAndKeepsGoing covers the logging wrapper.
+//
+// runOnceLogged swallows an error unless the context is live, so a failing pass
+// does not stop the loop. The observable consequence is that Run keeps running
+// after a pass fails, which is what makes a transient database lock survivable.
+func TestRunOnceReportsAFailingPassAndKeepsGoing(t *testing.T) {
+	st := newTestStore(t)
+	// A closed store: every pass fails, and the failure must not propagate.
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	writeJSONL(t, filepath.Join(root, "s.jsonl"),
+		`{"type":"session","id":"s1","cwd":"/tmp/p"}`,
+		`{"type":"message","timestamp":"2026-05-01T00:00:05Z","id":"m1","message":{"role":"assistant","model":"m","usage":{"input":5,"output":5}}}`,
+	)
+	sc := newScanner(t, st, root)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// RunOnce's error is returned; runOnceLogged logs and returns. Both are
+		// called here so neither path is untested.
+		_ = sc.RunOnce(context.Background())
+		sc.runOnceLogged(context.Background())
+		sc.runOnceLogged(context.Background())
+	}()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("a pass against a closed store did not return within 15s")
+	}
+}
+
+// -------------------------------------------------------------- OpenCode
+
+// The OpenCode source is the odd one out: every session lives in one shared
+// database, so the unit of work is a row rather than a file. Nothing tested the
+// scanner half of it — openCodeSessionIDs, scanOpenCode, or the Run branch that
+// calls them.
+
+// buildOpenCodeScanner makes a scanner whose source is an OpenCode database, with
+// the same fixture the parser tests use.
+func buildOpenCodeScanner(t *testing.T, st *store.Store, dbPath string) *Scanner {
+	t.Helper()
+	return New(Config{
+		Store: st,
+		Pricer: func() *source.Pricer {
+			p, err := source.NewPricer("../../models.json", "manual_pricing.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}(),
+		Logger:     testLogger(),
+		OpenCodeDB: dbPath,
+	})
+}
+
+// openCodeFixtureDB writes a small OpenCode-shaped database and returns its path.
+//
+// The schema is the one the parser reads, plus the parent_id the scanner's own
+// query filters on. It is built here rather than shared with internal/source,
+// whose fixture builder is a test file in another package: what the scanner needs
+// to be exercised is the schema and the row shape, not the parser's sanitised
+// transcript.
+//
+// Two sessions, each with one assistant message carrying a usage block, and one
+// child session under the first.
+func openCodeFixtureDB(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, stmt := range []string{
+		`CREATE TABLE session (
+			id TEXT PRIMARY KEY, directory TEXT, title TEXT, agent TEXT, model TEXT,
+			time_created INTEGER, time_updated INTEGER, parent_id TEXT)`,
+		`CREATE TABLE message (
+			id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+			time_updated INTEGER, data TEXT)`,
+		`CREATE TABLE part (
+			id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+			time_created INTEGER, time_updated INTEGER, data TEXT)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	seed := func(id, parent string, created int64) {
+		var parentArg any
+		if parent != "" {
+			parentArg = parent
+		}
+		if _, err := db.Exec(
+			`INSERT INTO session (id, directory, title, agent, model, time_created, time_updated, parent_id)
+			 VALUES (?,?,?,?,?,?,?,?)`,
+			id, "/home/testuser/project", "a session", "opencode", "claude-sonnet-4-6",
+			created, created, parentArg); err != nil {
+			t.Fatal(err)
+		}
+		data := `{"role":"assistant","tokens":{"input":100,"output":50,"reasoning":0},` +
+			`"modelID":"claude-sonnet-4-6"}`
+		if _, err := db.Exec(
+			`INSERT INTO message (id, session_id, time_created, time_updated, data)
+			 VALUES (?,?,?,?,?)`,
+			"msg_"+id, id, created, created, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("ses_top0000000001", "", 1779976545)
+	seed("ses_top0000000002", "", 1779976645)
+	seed("ses_child00000001", "ses_top0000000001", 1779976745)
+	return path
+}
+
+// TestOpenCodeSessionIDsReturnsOnlyTopLevelSessions covers the query the scanner
+// runs before parsing anything.
+//
+// OpenCode nests child sessions under a parent, and ingesting a child as a
+// top-level session would produce a duplicate: the child's messages are part of
+// the parent's transcript. The filter is `parent_id IS NULL OR parent_id = ”`,
+// and this is the first time it has been executed.
+func TestOpenCodeSessionIDsReturnsOnlyTopLevelSessions(t *testing.T) {
+	path := openCodeFixtureDB(t)
+
+	ids, err := openCodeSessionIDs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if !seen["ses_top0000000001"] || !seen["ses_top0000000002"] {
+		t.Errorf("openCodeSessionIDs returned %v, want both top-level sessions", ids)
+	}
+	if seen["ses_child00000001"] {
+		t.Error("openCodeSessionIDs returned a child session: its messages belong to " +
+			"its parent's transcript, so ingesting it separately double-counts them")
+	}
+	if len(ids) != 2 {
+		t.Errorf("openCodeSessionIDs returned %d sessions, want 2", len(ids))
+	}
+
+	// A missing database is the "not installed" case, which the caller treats as
+	// nothing to scan rather than as a failure.
+	if _, err := openCodeSessionIDs(filepath.Join(t.TempDir(), "absent.db")); err == nil {
+		t.Error("openCodeSessionIDs accepted a missing database")
+	}
+}
+
+// TestScanOpenCodeIngestsAndThenSkipsUnchangedSessions is the incremental
+// property for the shared-database source.
+//
+// The unit is a session rather than a file, so the "has this changed" test is a
+// time cursor rather than a size and mtime. A pass that re-ingests every session
+// every time would look like it worked — the totals would be right — and would
+// re-read every session in the database on every pass, which is the cost this
+// design exists to avoid.
+func TestScanOpenCodeIngestsAndThenSkipsUnchangedSessions(t *testing.T) {
+	path := openCodeFixtureDB(t)
+	st := newTestStore(t)
+	sc := buildOpenCodeScanner(t, st, path)
+	ctx := context.Background()
+
+	if err := sc.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first, err := st.Totals(ctx, store.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Sessions == 0 {
+		t.Fatalf("the first pass ingested nothing from %s", path)
+	}
+	t.Logf("first pass: %d sessions, %d calls", first.Sessions, first.Calls)
+
+	// The statuses are recorded under the opencode agent name, and the counts
+	// describe sessions rather than files.
+	statuses, err := st.ScanStatuses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, s := range statuses {
+		if s.Agent != model.AgentOpencode {
+			continue
+		}
+		found = true
+		if s.FilesChanged == 0 {
+			t.Error("the first pass reported no changed OpenCode sessions")
+		}
+	}
+	if !found {
+		t.Fatal("no scan status was recorded for the opencode source: the panel " +
+			"reports six sources whether or not each was walked, so a missing row " +
+			"reads as \"not part of the last scan\"")
+	}
+
+	// A second pass must re-read nothing.
+	if err := sc.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	statuses, _ = st.ScanStatuses()
+	for _, s := range statuses {
+		if s.Agent == model.AgentOpencode && s.FilesChanged != 0 {
+			t.Errorf("the second pass re-ingested %d OpenCode sessions; the time "+
+				"cursor did not hold", s.FilesChanged)
+		}
+	}
+
+	second, _ := st.Totals(ctx, store.Filter{})
+	if second.Sessions != first.Sessions || second.Calls != first.Calls {
+		t.Errorf("an unchanged pass changed the totals: %d/%d then %d/%d",
+			first.Sessions, first.Calls, second.Sessions, second.Calls)
+	}
+
+	// Appending a message to one session must extend that session, not replace
+	// it. The read is incremental — the parser resumes past the stored cursor and
+	// returns only the new rows — so committing it as a replacement would delete
+	// every call already stored for the session. That is the same failure the
+	// file path guards against in ingest(), and it is not guarded here.
+	//
+	// KNOWN RED on this branch: scanOpenCode calls ReplaceSession for every
+	// session, so a resumed OpenCode session loses its history. scan.go is a file
+	// this branch may edit only for the export in finding 11, so this is reported
+	// rather than fixed; see the report for the change.
+	if err := appendOpenCodeMessage(t, path, "ses_top0000000001", 1779977000000); err != nil {
+		t.Fatal(err)
+	}
+	if err := sc.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	third, _ := st.Totals(ctx, store.Filter{})
+	if third.Calls != first.Calls+1 {
+		t.Errorf("after appending a message there are %d calls, want %d: the increment "+
+			"was not committed alongside the calls already stored",
+			third.Calls, first.Calls+1)
+	}
+	// The specific shape: the session that grew must hold both of its calls.
+	perSession, err := st.SessionCalls(ctx, "ses_top0000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(perSession) != 2 {
+		t.Errorf("session ses_top0000000001 holds %d calls after an append, want 2: "+
+			"an incremental read committed as a replacement deletes the rows it did "+
+			"not re-read", len(perSession))
+	}
+	// And the session that did not move must be untouched.
+	other, err := st.SessionCalls(ctx, "ses_top0000000002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(other) != 1 {
+		t.Errorf("session ses_top0000000002 holds %d calls, want 1: the cursor is per "+
+			"session, so an append to one must not disturb another", len(other))
+	}
+	statuses, _ = st.ScanStatuses()
+	for _, s := range statuses {
+		if s.Agent == model.AgentOpencode && s.FilesChanged != 1 {
+			t.Errorf("the third pass re-ingested %d sessions, want 1: the cursor is "+
+				"per session, so only the one that moved should be re-read",
+				s.FilesChanged)
+		}
+	}
+}
+
+// TestScanOpenCodeIgnoresAMissingDatabase covers the installed-or-not case.
+//
+// OpenCode is the one agent here that may simply not be on the machine, and its
+// absence is not an error: every other user of dashd has a pi log or none of this
+// dashboard means anything.
+func TestScanOpenCodeIgnoresAMissingDatabase(t *testing.T) {
+	st := newTestStore(t)
+	sc := buildOpenCodeScanner(t, st, filepath.Join(t.TempDir(), "not-installed.db"))
+	ctx := context.Background()
+
+	if err := sc.RunOnce(ctx); err != nil {
+		t.Fatalf("a missing OpenCode database failed the pass: %v", err)
+	}
+	totals, _ := st.Totals(ctx, store.Filter{})
+	if totals.Sessions != 0 {
+		t.Errorf("a missing OpenCode database produced %d sessions", totals.Sessions)
+	}
+	// The source is still reported, so the panel shows it as searched-for rather
+	// than as unknown.
+	statuses, _ := st.ScanStatuses()
+	var found bool
+	for _, s := range statuses {
+		if s.Agent == model.AgentOpencode {
+			found = true
+			if s.Error != "" {
+				t.Errorf("a missing database was recorded as a scan failure: %q", s.Error)
+			}
+		}
+	}
+	if !found {
+		t.Error("no status recorded for the opencode source when its database is " +
+			"absent: the panel would show it as \"not scanned\" rather than as " +
+			"\"searched for, nothing there\"")
+	}
+}
+
+// TestScanOpenCodeReportsAnUnreadableDatabase is the loud-failure half.
+//
+// A database whose schema has changed must produce an error on that source's
+// status rather than a silent zero: OpenCode ships its own migrations and can
+// rename a column under us, and a scan that quietly reports nothing is
+// indistinguishable from a user with no OpenCode sessions.
+func TestScanOpenCodeReportsAnUnreadableDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wrong-schema.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE unrelated (a TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newTestStore(t)
+	sc := buildOpenCodeScanner(t, st, path)
+	// The pass itself must succeed: one broken source must not stop the others.
+	if err := sc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("an unreadable OpenCode database failed the whole pass: %v", err)
+	}
+
+	statuses, _ := st.ScanStatuses()
+	var found bool
+	for _, s := range statuses {
+		if s.Agent != model.AgentOpencode {
+			continue
+		}
+		found = true
+		if s.Error == "" {
+			t.Error("an unreadable OpenCode database was recorded as a successful " +
+				"pass: a schema change would read as \"you have no sessions\"")
+		}
+	}
+	if !found {
+		t.Fatal("no status recorded for the failing opencode source")
+	}
+}
+
+// appendOpenCodeMessage inserts one assistant message, as OpenCode would.
+func appendOpenCodeMessage(t *testing.T, path, sessionID string, at int64) error {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	_, err = db.Exec(
+		`INSERT INTO message (id, session_id, time_created, time_updated, data)
+		 VALUES (?,?,?,?,?)`,
+		"msg_scanner_appended", sessionID, at, at,
+		`{"role":"assistant","tokens":{"input":7,"output":8,"reasoning":0},`+
+			`"modelID":"claude-sonnet-4-6"}`)
+	return err
 }
