@@ -23,6 +23,7 @@ func TestParseArgs(t *testing.T) {
 		wantDB   string
 		wantVerb bool
 		wantDur  time.Duration
+		wantAuth string
 		wantErr  string
 	}{
 		{name: "no arguments at all", argv: nil, wantCmd: defaultCommand},
@@ -57,6 +58,13 @@ func TestParseArgs(t *testing.T) {
 		},
 		{name: "duration", argv: []string{"-interval", "90s", "serve"}, wantCmd: "serve", wantDur: 90 * time.Second},
 		{name: "duration after the command", argv: []string{"serve", "-interval", "90s"}, wantCmd: "serve", wantDur: 90 * time.Second},
+		{
+			name:    "auth-token before the command",
+			argv:    []string{"-interval", "90s", "-auth-token", "s3cret", "serve"},
+			wantCmd: "serve", wantDur: 90 * time.Second, wantAuth: "s3cret",
+		},
+		{name: "auth-token after the command", argv: []string{"serve", "-auth-token", "s3cret"}, wantCmd: "serve", wantAuth: "s3cret"},
+		{name: "empty auth-token means off", argv: []string{"-auth-token", "", "serve"}, wantCmd: "serve", wantAuth: ""},
 
 		{name: "typo is an error, not a silent server", argv: []string{"stat"}, wantErr: `unknown command "stat"`},
 		{name: "typo after flags is still an error", argv: []string{"-verbose", "scean"}, wantErr: `unknown command "scean"`},
@@ -105,6 +113,9 @@ func TestParseArgs(t *testing.T) {
 			}
 			if tc.wantDB != "" && o.db != tc.wantDB {
 				t.Errorf("db = %q, want %q", o.db, tc.wantDB)
+			}
+			if tc.wantAuth != "" && o.authToken != tc.wantAuth {
+				t.Errorf("authToken = %q, want %q", o.authToken, tc.wantAuth)
 			}
 			if tc.wantDur != 0 && o.interval != tc.wantDur {
 				t.Errorf("interval = %v, want %v", o.interval, tc.wantDur)
@@ -169,7 +180,7 @@ func TestPrintUsageMentionsEverything(t *testing.T) {
 			t.Errorf("usage does not document command %q", c)
 		}
 	}
-	for _, f := range []string{"-db", "-addr", "-interval", "-home", "-models", "-opencode", "-verbose"} {
+	for _, f := range []string{"-db", "-addr", "-interval", "-home", "-models", "-opencode", "-verbose", "-auth-token"} {
 		if !strings.Contains(got, f) {
 			t.Errorf("usage does not document flag %q", f)
 		}

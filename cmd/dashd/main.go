@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -129,9 +130,13 @@ func run(o options, command string, stdout io.Writer) error {
 		go scanner.Run(ctx, o.interval)
 	}
 
+	logExposure(o, log)
+
 	httpSrv := &http.Server{
-		Addr:    o.addr,
-		Handler: srv.Handler(),
+		Addr: o.addr,
+		// Authentication is a wrapper rather than something the dashboard knows
+		// about, so this file decides policy and web/ stays a dashboard.
+		Handler: web.WithAuth(o.authToken, log, srv.Handler()),
 		// Generous, because a first render over a large history is genuinely
 		// slower than a static page but not unbounded.
 		ReadHeaderTimeout: 10 * time.Second,
@@ -147,6 +152,7 @@ func run(o options, command string, stdout io.Writer) error {
 		"url", "http://"+ln.Addr().String(),
 		"db", o.db,
 		"scanning", command == "serve-and-scan",
+		"auth", o.authToken != "",
 		"interval", o.interval,
 		"pid", os.Getpid())
 	log.Info("press ctrl-c to stop; -verbose for per-request detail")
@@ -177,6 +183,60 @@ func run(o options, command string, stdout io.Writer) error {
 	return nil
 }
 
+// logExposure says plainly what the bind address implies. `dashd -addr 0.0.0.0`
+// on a cloud VM is a documented, and reasonable, thing for someone to do — which
+// is exactly why the unauthenticated case needs to be loud at startup rather
+// than discovered later.
+func logExposure(o options, log *slog.Logger) {
+	exposed := exposedToNetwork(o.addr)
+	switch {
+	case !exposed && o.authToken == "":
+		// Nothing to say. Localhost, no token: the normal case, and a warning
+		// here would train the operator to ignore warnings.
+	case exposed && o.authToken == "":
+		log.Warn("serving on a non-loopback address with NO authentication",
+			"addr", o.addr,
+			"exposes", "project paths, session titles, model names and per-session cost to anyone who can reach this port",
+			"reachable_from", "every interface on this host, including its public one",
+			"fix", "set -auth-token, or bind to 127.0.0.1 and reach it over an SSH tunnel")
+	case exposed && o.authToken != "":
+		log.Info("serving on a non-loopback address, protected by -auth-token",
+			"addr", o.addr, "accepts", "Authorization: Bearer, or X-Auth-Token",
+			"exempt", "/healthz")
+	default:
+		log.Info("authentication enabled", "accepts", "Authorization: Bearer, or X-Auth-Token",
+			"exempt", "/healthz")
+	}
+}
+
+// exposedToNetwork reports whether addr binds somewhere other than this machine.
+func exposedToNetwork(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Unparseable is not a reason to be reassuring.
+		return true
+	}
+	switch strings.ToLower(host) {
+	case "":
+		// ":8753" and "0.0.0.0:8753" both mean every interface.
+		return true
+	case "localhost":
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
+}
+
+// warnIfFallbackOnly reports the one degraded-but-working state: the OpenRouter
+// price dump did not load and every price is coming from the embedded table.
+//
+// This is not fatal, and deliberately so. The fallback table exists so that a
+// binary without a dump beside it still runs, and refusing to start would turn a
+// rough number into no number. It is also the reason this is loud: with the dump
+// absent, a model the fallback knows is priced correctly, but a model it does
+// not know is *unpriced* — and a stale row is worse than a missing one, because
+// a missing one is at least visible in the unpriced count. Silence here is how a
+// `$0.00` with `priced=1` reaches the dashboard.
 func warnIfFallbackOnly(pricer *source.Pricer, modelsPath string, log *slog.Logger) {
 	if !pricer.FallbackOnly() {
 		return

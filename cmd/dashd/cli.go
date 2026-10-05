@@ -36,7 +36,10 @@ type options struct {
 	home     string
 	models   string
 	opencode string
-	verbose  bool
+	// authToken is empty unless -auth-token was given, which means "no
+	// authentication", not "authentication with an empty secret".
+	authToken string
+	verbose   bool
 }
 
 // newFlagSet builds the flag set. It is separate so that both parseArgs and
@@ -57,6 +60,8 @@ func newFlagSet(o *options, out io.Writer) *flag.FlagSet {
 		"path to the OpenRouter models.json price dump")
 	fs.StringVar(&o.opencode, "opencode", "",
 		"path to the OpenCode database (default: inside -home)")
+	fs.StringVar(&o.authToken, "auth-token", "",
+		"require this bearer token (Authorization: Bearer, or X-Auth-Token); empty disables authentication")
 	fs.BoolVar(&o.verbose, "verbose", false, "log every request and scan detail")
 	return fs
 }
@@ -141,5 +146,8 @@ Commands:
 Flags:
 `)
 	fs.PrintDefaults()
-	fmt.Fprintf(out, ``)
+	fmt.Fprintf(out, `
+Authentication is off unless -auth-token is set. With a token, requests need
+"Authorization: Bearer <token>" or "X-Auth-Token: <token>", except /healthz.
+`)
 }
