@@ -92,6 +92,67 @@ func (f Filter) where(colPrefix, tsCol string) (string, []any) {
 	return f.whereExtra(colPrefix, tsCol)
 }
 
+// whereToolCall builds the clause for the tool_call table.
+//
+// tool_call carries agent, project and a timestamp but has no model column: a
+// tool invocation is not attributed to a model, only to a session. Filtering it
+// by model therefore cannot be a column comparison, and the two entry points
+// that needed one called where("t", "ts"), which emitted `t.model IN (...)`
+// against a table with no such column. Every page load with ?model= set died with
+// a 500 — "tools: SQL logic error: no such column: t.model" — so the filter did
+// not merely fail to apply, it took the whole view down.
+//
+// The model axis is expressed as an EXISTS over the session's calls, which is the
+// same translation whereSession already uses and the only one that can be right:
+// a tool call belongs to a session, and a session's model is whatever its calls
+// used. So a tool call counts when some call in its session matched, and the tool
+// totals answer "tools used in sessions that ran this model" rather than
+// pretending a per-tool model split exists.
+func (f Filter) whereToolCall(colPrefix string) (string, []any) {
+	var clauses []string
+	var args []any
+
+	p := func(col string) string {
+		if colPrefix == "" {
+			return col
+		}
+		return colPrefix + "." + col
+	}
+
+	if len(f.Models) > 0 {
+		clauses = append(clauses,
+			"EXISTS (SELECT 1 FROM call tc WHERE tc.session_uid = "+p("session_uid")+
+				" AND tc.model IN ("+inPlaceholders(len(f.Models))+"))")
+		for _, m := range f.Models {
+			args = append(args, m)
+		}
+	}
+	if len(f.Agents) > 0 {
+		clauses = append(clauses, p("agent")+" IN ("+inPlaceholders(len(f.Agents))+")")
+		for _, a := range f.Agents {
+			args = append(args, a)
+		}
+	}
+	if len(f.Projects) > 0 {
+		clauses = append(clauses, p("project")+" IN ("+inPlaceholders(len(f.Projects))+")")
+		for _, pr := range f.Projects {
+			args = append(args, pr)
+		}
+	}
+	if f.DateFrom != nil {
+		clauses = append(clauses, p("ts")+" >= ? AND "+p("ts")+" > 0")
+		args = append(args, f.DateFrom.Unix())
+	}
+	if f.DateTo != nil {
+		clauses = append(clauses, p("ts")+" <= ? AND "+p("ts")+" > 0")
+		args = append(args, f.DateTo.Unix())
+	}
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
 // whereSession builds the clause for the session table.
 //
 // The session table carries agent, project and timestamps but has no model
@@ -483,7 +544,7 @@ type ToolStat struct {
 // result is not itself billed, so the only honest reading is "tool calls
 // associated with calls costing this much".
 func (s *Store) Tools(ctx context.Context, f Filter) ([]ToolStat, error) {
-	where, args := f.where("t", "ts")
+	where, args := f.whereToolCall("t")
 	// Each tool result is attributed to the first LLM call at or after it in the
 	// same session: that is the request the tool was issued in the context of.
 	// A tool call is not itself billable, so this is an association rather than
@@ -833,7 +894,7 @@ type ProjectTool struct {
 
 // ProjectTools returns the tool breakdown per project.
 func (s *Store) ProjectTools(ctx context.Context, f Filter) ([]ProjectTool, error) {
-	where, args := f.where("t", "ts")
+	where, args := f.whereToolCall("t")
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT t.project, t.tool, COUNT(*), COALESCE(SUM(t.seconds),0),
 		       COALESCE(SUM(t.is_error),0)
