@@ -47,8 +47,21 @@ const dashboardData = window.dashboardData || {};
     }
 
     function render() {
+        const container = document.getElementById('daily-chart-content');
         const visible = getVisibleDays();
-        if (!visible.length) return;
+        if (!visible.length) {
+            // Blank space is not a message. The chart is the biggest thing on
+            // the page, so on a fresh install it is the first thing looked at.
+            if (container) {
+                container.innerHTML =
+                    '<div class="empty-state">' +
+                    '<strong>No spending recorded yet.</strong>' +
+                    '<span>It appears once the scanner has read a session log. ' +
+                    'The sources panel below reports what was looked for.</span>' +
+                    '</div>';
+            }
+            return;
+        }
 
         const maxCost = Math.max(...visible.map(d => d.cost), 0.0001);
 
@@ -221,6 +234,14 @@ const TOOLS_COLUMNS = 6;
 const PROJECTS_COLUMNS = 9;
 const ACTIVITY_COLUMNS = 9;
 
+// An empty tbody is indistinguishable from one that failed to render, and on a
+// machine whose logs dashd cannot read every table is empty. That reader must
+// not conclude there was no usage, so the row says what it means instead.
+function emptyRow(columns, message) {
+    return '<tr><td colspan="' + columns + '" class="empty-row">' +
+        escapeHtml(message) + '</td></tr>';
+}
+
 function formatFullNumber(value) {
     const n = Number(value) || 0;
     return String(Math.round(n));
@@ -341,7 +362,12 @@ function sessionSortValue(s, field) {
 
 function renderProjects() {
     const tbody = document.getElementById('projects-tbody');
+    if (!tbody) return;
     const sorted = sortData(projects, projectSort);
+    if (!sorted.length) {
+        tbody.innerHTML = emptyRow(PROJECTS_COLUMNS, 'No projects in this view.');
+        return;
+    }
     tbody.innerHTML = sorted.map((p, idx) => {
         const displayName = displayNameFromPath(p.name);
         const shortName = displayName.length > 50 ? displayName.slice(0, 47) + '...' : displayName;
@@ -406,6 +432,7 @@ function toggleProjectRow(rowId) {
 
 function renderSessions() {
     const tbody = document.getElementById('sessions-tbody');
+    if (!tbody) return;
 
     // Sessions arrive nested under their project; the table is flat, so they are
     // lifted out here. The project's agent command comes along because that is
@@ -452,6 +479,13 @@ function renderSessions() {
     }
     if (prevBtn) prevBtn.disabled = sessionsPage === 0;
     if (nextBtn) nextBtn.disabled = sessionsPage >= totalPages - 1;
+
+    if (!pageRows.length) {
+        tbody.innerHTML = emptyRow(SESSIONS_COLUMNS, query
+            ? 'No sessions match this filter.'
+            : 'No sessions in this view.');
+        return;
+    }
 
     let html = '';
 
@@ -608,7 +642,12 @@ let modelSort = { field: 'cost', asc: false };
 
 function renderModels() {
     const tbody = document.getElementById('models-tbody');
+    if (!tbody) return;
     const sorted = sortData(models, modelSort);
+    if (!sorted.length) {
+        tbody.innerHTML = emptyRow(MODELS_COLUMNS, 'No model calls in this view.');
+        return;
+    }
 
     tbody.innerHTML = sorted.map(m => {
         const modelClass = m.name.toLowerCase().includes('claude') ? 'model-claude' : 'model-other';
@@ -646,7 +685,12 @@ let toolSort = { field: 'time', asc: false };
 
 function renderTools() {
     const tbody = document.getElementById('tools-tbody');
+    if (!tbody) return;
     const sorted = sortData(tools, toolSort);
+    if (!sorted.length) {
+        tbody.innerHTML = emptyRow(TOOLS_COLUMNS, 'No tool calls in this view.');
+        return;
+    }
 
     // The cost attributed to each tool is what the column header promises, so it
     // is what is rendered; the bar underneath is that tool's share of the total
@@ -854,9 +898,7 @@ updateSortIcons('tools-table', toolSort);
                     '<div class="activity-empty">No calls in this window.</div>';
             }
             if (tbodyEl) {
-                tbodyEl.innerHTML =
-                    '<tr><td colspan="9" style="text-align:center;color:var(--text-secondary)">' +
-                    'No calls in this window.</td></tr>';
+                tbodyEl.innerHTML = emptyRow(ACTIVITY_COLUMNS, 'No calls in this window.');
             }
             return;
         }
@@ -1042,9 +1084,7 @@ updateSortIcons('tools-table', toolSort);
                 '<td class="numeric">' + formatDuration(bucket.llm_seconds) + '</td>' +
                 '<td class="numeric">$' + bucket.cost.toFixed(4) + '</td></tr>';
         }).join('');
-        return rows ||
-            '<tr><td colspan="9" style="text-align:center;color:var(--text-secondary)">' +
-            'No activity in this window.</td></tr>';
+        return rows || emptyRow(ACTIVITY_COLUMNS, 'No activity in this window.');
     }
 
     // ---------------------------------------------------------------- helpers

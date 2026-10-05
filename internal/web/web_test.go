@@ -739,3 +739,128 @@ func TestSortComparesNumbersAsNumbers(t *testing.T) {
 		t.Error("the sort has no stable tiebreak, so equal rows reshuffle per render")
 	}
 }
+
+// ---------------------------------------------------------------- empty state
+
+func TestEmptyDatabaseExplainsItselfRatherThanRenderingNothing(t *testing.T) {
+	// A user whose agent logs dashd cannot read must not see the same page as a
+	// user with no usage. Every table needs a message, and so does the page as a
+	// whole.
+	srv, _ := newTestServer(t)
+	body := get(t, srv, "/").Body.String()
+
+	for _, want := range []string{
+		"Sources", // the source-detection panel
+		"0 of 6 sources found",
+		"No scan has run yet",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("empty page is missing %q", want)
+		}
+	}
+	// Each known agent gets a row whether or not anything was found, so a miss
+	// is visible rather than inferred from an absent row.
+	for _, agent := range []string{"pi", "claude", "codex", "gemini", "agy", "opencode"} {
+		if !strings.Contains(body, "<td>"+agent+"</td>") {
+			t.Errorf("source panel does not list %s", agent)
+		}
+	}
+
+	// The daily chart's message is written by the script, so it is asserted
+	// there rather than in the served markup.
+	script := readAsset(t, assets, "assets/dashboard.js")
+	if !strings.Contains(script, "No spending recorded yet") {
+		t.Error("the daily chart renders nothing at all when there is no data")
+	}
+}
+
+func TestJSEmitsANoResultsRowForEveryTable(t *testing.T) {
+	// The tbodies are filled by the script, so the message has to be in the
+	// script: a server-rendered {{else}} would never appear on this page.
+	script := readAsset(t, assets, "assets/dashboard.js")
+	for _, want := range []string{
+		"emptyRow(MODELS_COLUMNS",
+		"emptyRow(TOOLS_COLUMNS",
+		"emptyRow(PROJECTS_COLUMNS",
+		"emptyRow(SESSIONS_COLUMNS",
+		"emptyRow(ACTIVITY_COLUMNS",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("dashboard.js has no empty-state row %q", want)
+		}
+	}
+}
+
+func TestSourcePanelIsHiddenOnceEverySourceIsFound(t *testing.T) {
+	srv, st := newTestServer(t)
+	seed(t, st, time.Now())
+	// A scan that found logs for every source it walked leaves nothing to act
+	// on, so the panel would be noise. The agent not recorded here is
+	// deliberately left out to prove the panel keys off scan_status, not off the
+	// presence of data.
+	for _, agent := range []string{"pi", "claude", "codex", "gemini", "agy", "opencode"} {
+		if err := st.RecordScanStatus(agent, model.ScanStatus{
+			Agent: agent, LastScanAt: time.Now(), FilesSeen: 4, CallsIngested: 9,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := get(t, srv, "/").Body.String()
+	if strings.Contains(body, `class="section source-panel"`) {
+		t.Error("source panel is shown even though every source has logs")
+	}
+	// The scanner table is still there; only the panel is suppressed.
+	if !strings.Contains(body, `id="scan-table"`) {
+		t.Error("the scanner table was removed along with the panel")
+	}
+}
+
+func TestSourcePanelReportsAFailingSource(t *testing.T) {
+	srv, st := newTestServer(t)
+	if err := st.RecordScanStatus("claude", model.ScanStatus{
+		Agent: "claude", LastScanAt: time.Now(), FilesSeen: 3, Error: "permission denied",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := get(t, srv, "/").Body.String()
+	if !strings.Contains(body, "source-error") || !strings.Contains(body, "permission denied") {
+		t.Error("a failing source is not surfaced in the panel")
+	}
+	// A source that errored is not counted as found even though the walk saw
+	// files: the pass did not complete.
+	want := "0 of 6 sources found · 1 failing"
+	if !strings.Contains(body, want) {
+		t.Errorf("source summary = %q, want it to contain %q", sourceSummaryOf(body), want)
+	}
+}
+
+// sourceSummaryOf pulls the summary badge text out of the rendered page.
+func sourceSummaryOf(body string) string {
+	i := strings.Index(body, `class="badge">`)
+	if i < 0 {
+		return ""
+	}
+	rest := body[i+len(`class="badge">`):]
+	j := strings.Index(rest, "</span>")
+	return rest[:j]
+}
+
+func TestSourceStateIsUsableAsACSSClass(t *testing.T) {
+	// The state slug goes straight into a class attribute, and every slug has a
+	// style. "not scanned" produced class="source-not scanned", which is two
+	// classes, one of which matched nothing.
+	for _, v := range sourceViews(nil) {
+		if strings.ContainsAny(v.State, " \t") {
+			t.Errorf("source state %q is not a single class token", v.State)
+		}
+		if v.Status == "" {
+			t.Errorf("source %s has no readable status", v.Agent)
+		}
+	}
+	css := readAsset(t, assets, "assets/dashboard.css")
+	for _, state := range []string{"found", "empty", "error", "not-scanned"} {
+		if !strings.Contains(css, ".source-state.source-"+state) {
+			t.Errorf("no style for source state %q", state)
+		}
+	}
+}

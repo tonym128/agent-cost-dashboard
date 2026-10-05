@@ -52,6 +52,41 @@
     </form>
   </div>
 
+  {{if .SourcesNeedAction}}
+  <div class="section source-panel">
+    <div class="section-header">
+      <span>Sources</span>
+      <span class="badge">{{.SourcesSummary}}</span>
+    </div>
+    <p class="source-note">
+      dashd reads each agent's own log format. An agent marked
+      &ldquo;no logs&rdquo; was searched for and nothing was found at the
+      location shown &mdash; its history is absent from the figures below
+      rather than having cost nothing.
+    </p>
+    <table id="sources-table">
+      <thead>
+        <tr>
+          <th>Agent</th>
+          <th>Status</th>
+          <th>Log location</th>
+          <th>What the last scan found</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Sources}}
+        <tr{{if .Attention}} class="source-attention"{{end}}>
+          <td>{{.Agent}}</td>
+          <td><span class="source-state source-{{.State}}">{{.Status}}</span></td>
+          <td class="source-path">{{.Hint}}</td>
+          <td class="source-detail">{{.Detail}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+
   <div class="stats-grid">
     {{range .StatCards}}
     <div class="stat-card{{if .Wide}} token-card{{end}}">

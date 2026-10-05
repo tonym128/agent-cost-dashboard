@@ -945,3 +945,90 @@ footer {
     color: var(--text-secondary);
     line-height: 1.4;
 }
+
+/* ── Source detection ──────────────────────────────────────────────────
+   Shown when a source could not be read, or on a fresh install. A user whose
+   agent logs dashd cannot read is otherwise indistinguishable from a user with
+   no usage, and the mistake is theirs for not being told. Colour comes from
+   the existing tokens. */
+.source-panel {
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--accent-yellow);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 32px;
+    background: var(--bg-secondary);
+}
+
+.source-note {
+    margin: 10px 0 14px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    max-width: 80ch;
+}
+
+.source-path,
+.source-detail {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.source-path {
+    font-family: var(--font-mono);
+    white-space: nowrap;
+}
+
+.source-state {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+.source-state.source-found {
+    background: rgba(63, 185, 80, 0.15);
+    color: var(--accent-green);
+}
+
+/* Nothing found, and a source that was never walked, are both things the
+   reader may be able to act on, so both are amber rather than neutral. */
+.source-state.source-empty,
+.source-state.source-not-scanned {
+    background: rgba(210, 153, 34, 0.15);
+    color: var(--accent-yellow);
+}
+
+.source-state.source-error {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--accent-red);
+}
+
+/* An empty table or an empty chart reads as a broken page unless it says
+   something, so both states are styled as text rather than left blank. */
+.empty-row,
+.empty-state {
+    color: var(--text-secondary);
+}
+
+.empty-row {
+    text-align: center;
+    padding: 24px 16px;
+    font-style: italic;
+}
+
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: center;
+    text-align: center;
+    padding: 32px 16px;
+}
+
+.empty-state strong {
+    color: var(--text-primary);
+    font-size: 15px;
+}

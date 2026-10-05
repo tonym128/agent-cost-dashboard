@@ -157,6 +157,12 @@ type pageData struct {
 	Facets      facets
 	Scan        []scanStatusView
 	ScanSummary string
+	// Sources is the source-detection panel: one row per agent this build can
+	// read, and whether its logs were found. SourcesNeedAction decides whether
+	// it is shown at all.
+	Sources           []sourceView
+	SourcesSummary    string
+	SourcesNeedAction bool
 }
 
 type facets struct {
@@ -245,14 +251,21 @@ func (s *Server) buildPayload(ctx context.Context, filter store.Filter, query ur
 	}
 
 	views, _ := s.scanViews(ctx)
+	sources := sourceViews(views)
 	return pageData{
-		Generated:   s.Generated().Format("2006-01-02 15:04:05"),
-		StatCards:   statCards(totals),
-		PayloadJSON: template.JS(encoded),
-		FilterState: parseFilterState(query),
-		Facets:      view,
-		Scan:        views,
-		ScanSummary: scanSummary(views),
+		Generated:      s.Generated().Format("2006-01-02 15:04:05"),
+		StatCards:      statCards(totals),
+		PayloadJSON:    template.JS(encoded),
+		FilterState:    parseFilterState(query),
+		Facets:         view,
+		Scan:           views,
+		ScanSummary:    scanSummary(views),
+		Sources:        sources,
+		SourcesSummary: sourceSummary(sources),
+		// Shown whenever a source needs attention, and also when the database
+		// holds no calls at all: on a fresh install that panel is the only
+		// thing on the page explaining why every figure is zero.
+		SourcesNeedAction: anyNeedsAttention(sources) || totals.Calls == 0,
 	}, nil
 }
 
