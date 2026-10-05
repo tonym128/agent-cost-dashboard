@@ -62,6 +62,25 @@ type sessionBuilder struct {
 	// cumulatively rather than per call, so a call's usage is the difference
 	// between consecutive totals; the builder has to carry the previous one.
 	prevTotals map[string]any
+
+	// prevTotalsHook recovers prevTotals for a parser resuming mid-file, where
+	// the total the increment must be measured against was recorded before the
+	// cursor and so is not in memory. It is called at most once, and only if a
+	// record actually needs the baseline — an incremental read of an unchanged
+	// file pays nothing.
+	prevTotalsHook func() map[string]any
+}
+
+// baselineTotals returns the running total this record's usage is differenced
+// against, recovering it from the log when the read resumed past it.
+func (b *sessionBuilder) baselineTotals() map[string]any {
+	if len(b.prevTotals) > 0 || b.prevTotalsHook == nil {
+		return b.prevTotals
+	}
+	if recovered := b.prevTotalsHook(); len(recovered) > 0 {
+		b.prevTotals = recovered
+	}
+	return b.prevTotals
 }
 
 func newSessionBuilder(uid, agent, project string) *sessionBuilder {

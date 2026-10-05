@@ -658,8 +658,8 @@ func consumeCodex(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	// everything before the reset, and reporting a negative figure would be
 	// worse than reporting none.
 	delta := func(key string) int64 {
-		if v := num(last, key); v > 0 {
-			return v
+		if _, present := last[key]; present {
+			return num(last, key)
 		}
 		d := num(total, key) - num(prevTotals, key)
 		if d < 0 {
