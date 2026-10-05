@@ -80,10 +80,13 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Close releases the database.
 func (s *Store) Close() error { return s.db.Close() }
 
-// schema is applied in full on every open. Every statement is idempotent
-// (IF NOT EXISTS) so there is no separate migration bookkeeping to drift out of
-// sync with the code. Additive changes go at the end; destructive changes need
-// an explicit user_version bump.
+// schema is the shape a fresh database is created in, and is applied on every
+// open. It is only ever the *starting* shape, not the whole story: every
+// statement in it is `IF NOT EXISTS`, so on a database that already exists it
+// is a no-op. An existing database is brought forward by the migrations below,
+// which is the only mechanism that can actually change a table that is already
+// there — `CREATE TABLE IF NOT EXISTS call (...)` with a new column in it does
+// nothing at all to a table called `call` that already exists.
 const schema = `
 CREATE TABLE IF NOT EXISTS call (
 	session_uid       TEXT    NOT NULL,
@@ -192,9 +195,197 @@ CREATE TABLE IF NOT EXISTS scan_status (
 ) WITHOUT ROWID;
 `
 
+// ---------------------------------------------------------------- migrations
+
+// targetVersion is the schema version this build of the code produces: the
+// version reached by the last entry in migrations.
+//
+// It is derived from the list rather than kept as a constant of its own, because
+// a constant beside the list is a second thing to forget to update — and the
+// failure mode of forgetting is a build that silently refuses to open a
+// database it could have migrated.
+func targetVersion() int {
+	if len(migrations) == 0 {
+		return 0
+	}
+	return migrations[len(migrations)-1].version
+}
+
+// migration is one ordered step from (version-1) to version.
+//
+// apply runs inside a transaction together with the `user_version` write, so a
+// step either lands completely or not at all. A nil apply is a deliberate no-op
+// and is how the version 0 -> 1 step is expressed.
+type migration struct {
+	version int
+	name    string
+	apply   func(tx *sql.Tx) error
+}
+
+// migrations is the ordered list of schema steps, and the only place a schema
+// change may be recorded.
+//
+// To change the schema, both of these:
+//
+//  1. edit the shape in `schema` above (adding a new const for the new DDL,
+//     concatenated into `schema` the way v2RollupIndexes is), so that a fresh
+//     database is created directly in the new shape;
+//  2. append an entry below that brings an existing database from the current
+//     version to the new one — using addColumn for a new column, because
+//     `CREATE TABLE IF NOT EXISTS` cannot add a column to a table that already
+//     exists, which is the entire reason this list exists.
+//
+// There is no version constant to bump: the target version is whatever the last
+// entry says (see targetVersion), and TestFreshAndMigratedSchemasAreIdentical
+// fails if the two halves of a change disagree.
+//
+// The list is append-only. Never edit, reorder or delete an entry that has
+// shipped: databases out in the field have already run it, and the code that
+// reads them assumes the result. A mistake in a released step is fixed by
+// appending another step.
+//
+// Every step must be safe to run against a database that has already seen it
+// (`IF NOT EXISTS`, or a column-existence guard via addColumn). It costs
+// nothing — the version check in migrate skips steps that have already been
+// applied — and it means a database left at an intermediate version by an
+// interrupted run can simply be opened again.
+var migrations = []migration{
+	{
+		// 0 -> 1: no-op, on purpose.
+		//
+		// Version 0 means "a database created before this list existed", i.e.
+		// one written by a build whose only schema step was `Exec(schema)`.
+		// Such a database already has the entire v1 shape — every table and
+		// every index that predates v2 — and its user_version is 0 only because
+		// nothing ever wrote it. Re-asserting v1 here would be harmless, but
+		// asserting it by *running DDL* is not: a statement that is only safe
+		// against a fresh database (adding a column, say) would corrupt a v0
+		// database that is already at the v1 shape. So this step claims the
+		// version and changes nothing at all. The invariant it relies on —
+		// "a v0 database is already a v1 database" — is asserted by
+		// TestMigrationFromV0Database.
+		version: 1,
+		name:    "baseline schema (claimed, not applied)",
+	},
+}
+
+// execScript turns a multi-statement script into a migration step.
+func execScript(script string) func(*sql.Tx) error {
+	return func(tx *sql.Tx) error {
+		_, err := tx.Exec(script)
+		return err
+	}
+}
+
+// addColumn adds a column to a table unless the table already has one by that
+// name.
+//
+// SQLite has no `ADD COLUMN IF NOT EXISTS`, and a plain ALTER TABLE that names
+// an existing column fails, so the check is made here. This is the helper a
+// migration adding a column to an existing table should use: it is the step
+// that `CREATE TABLE IF NOT EXISTS` cannot perform.
+func addColumn(tx *sql.Tx, table, column, decl string) error {
+	has, err := hasColumn(tx, table, column)
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	// table and column come from the migration list, never from user input, so
+	// there is nothing to bind and nothing to quote.
+	_, err = tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl))
+	return err
+}
+
+// hasColumn reports whether a table already has a column.
+func hasColumn(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// schemaVersion reads the database's recorded schema version.
+func (s *Store) schemaVersion() (int, error) {
+	var v int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+		return 0, fmt.Errorf("read schema version: %w", err)
+	}
+	return v, nil
+}
+
 func (s *Store) migrate() error {
+	version, err := s.schemaVersion()
+	if err != nil {
+		return err
+	}
+	target := targetVersion()
+	if version > target {
+		// Refuse rather than guess. Writing to a newer schema with older code
+		// is how a database gets quietly mangled, and the only safe move is to
+		// tell the user to upgrade.
+		return fmt.Errorf("database schema version %d is newer than this build understands (%d): upgrade dashd",
+			version, target)
+	}
+	// The list is walked in order below, so a list that is not ordered would
+	// silently skip a step. Cheap to check, and the mistake is invisible when it
+	// happens.
+	prev := 0
+	for _, m := range migrations {
+		if m.version <= prev {
+			return fmt.Errorf("migration list is not in increasing version order: version %d follows %d", m.version, prev)
+		}
+		prev = m.version
+	}
+	// A fresh database gets the whole shape in one pass, and an existing one
+	// gets a no-op from every statement in it.
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
+	}
+	for _, m := range migrations {
+		if m.version <= version {
+			continue
+		}
+		if err := s.applyMigration(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyMigration runs one step and records the version it reached.
+//
+// The step and the `user_version` write share a transaction, so a step that
+// fails part-way leaves the database at the version it started from rather than
+// claiming a version it did not reach. `PRAGMA user_version` takes no bind
+// parameter, hence the formatted statement; the value is a constant from the
+// migration list, never anything a caller supplied.
+func (s *Store) applyMigration(m migration) error {
+	err := s.InTx(func(tx *sql.Tx) error {
+		if m.apply != nil {
+			if err := m.apply(tx); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", m.version))
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("migrate to schema version %d (%s): %w", m.version, m.name, err)
 	}
 	return nil
 }
