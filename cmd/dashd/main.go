@@ -12,12 +12,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,62 +30,50 @@ import (
 	"github.com/tonym128/agent-cost-dashboard/internal/web"
 )
 
+// stopTimeout bounds how long shutdown waits for an in-flight scan pass to
+// notice the cancellation. Long enough for the pass that is nearly done, short
+// enough that ctrl-c still feels like ctrl-c.
+const stopTimeout = 30 * time.Second
+
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "dashd:", err)
-		os.Exit(1)
-	}
+	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-type options struct {
-	db       string
-	addr     string
-	interval time.Duration
-	home     string
-	models   string
-	opencode string
-	verbose  bool
+// runCLI parses the command line, handles the two options that print and exit,
+// and otherwise runs the command. Kept separate from main so the exit code and
+// the streams are testable without starting a server.
+func runCLI(argv []string, stdout, stderr io.Writer) int {
+	o, command, err := parseArgs(argv)
+	switch {
+	case errors.Is(err, flag.ErrHelp):
+		// `-h` is a request, not a failure.
+		printUsage(stderr)
+		return 0
+	case err != nil:
+		fmt.Fprintf(stderr, "dashd: %v\n\n", err)
+		printUsage(stderr)
+		return 2
+	}
+
+	if o.showVer {
+		fmt.Fprintln(stdout, versionString())
+		return 0
+	}
+
+	if err := run(o, command, stdout); err != nil {
+		fmt.Fprintln(stderr, "dashd:", err)
+		return 1
+	}
+	return 0
 }
 
-func run() error {
-	fs := flag.NewFlagSet("dashd", flag.ContinueOnError)
-	command := "serve-and-scan"
-	if len(os.Args) > 1 && len(os.Args[1]) > 0 && os.Args[1][0] != '-' {
-		command = os.Args[1]
-		os.Args = append(os.Args[:1], os.Args[2:]...)
-	}
-
-	home, _ := os.UserHomeDir()
-	var o options
-	fs.StringVar(&o.db, "db", filepath.Join(home, ".local/share/dashd/dashboard.db"),
-		"path to the SQLite database")
-	fs.StringVar(&o.addr, "addr", "127.0.0.1:8753",
-		"address to serve on; 0.0.0.0 exposes the dashboard to the network")
-	fs.DurationVar(&o.interval, "interval", 30*time.Second,
-		"how often to scan for new activity")
-	fs.StringVar(&o.home, "home", home, "directory to look for agent logs under")
-	fs.StringVar(&o.models, "models", defaultModelsPath(),
-		"path to the OpenRouter models.json price dump")
-	fs.StringVar(&o.opencode, "opencode", "",
-		"path to the OpenCode database (default: inside -home)")
-	fs.BoolVar(&o.verbose, "verbose", false, "log every request and scan detail")
-
-	if err := fs.Parse(os.Args[1:]); err != nil {
-		return err
-	}
-
+func run(o options, command string, stdout io.Writer) error {
 	level := slog.LevelInfo
 	if o.verbose {
 		level = slog.LevelDebug
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
-
-	switch command {
-	case "serve-and-scan", "serve", "scan", "reprice", "stats":
-	default:
-		return fmt.Errorf("unknown command %q (want serve-and-scan, serve, scan, reprice or stats)", command)
-	}
-
+	log.Info("starting", "version", version, "commit", commit, "date", date, "command", command)
 	if o.opencode == "" {
 		o.opencode = filepath.Join(o.home, ".local/share/opencode/opencode.db")
 	}
@@ -93,6 +84,9 @@ func run() error {
 	}
 	defer st.Close()
 
+	// The pricer is built before the command switch on purpose: every command
+	// that costs anything needs it, so this is the single place the fallback
+	// warning can be — once per process, for scan, reprice, stats and serve.
 	pricer, err := source.NewPricer(o.models, "")
 	if err != nil {
 		return fmt.Errorf("%w\n\nPricing is required. Fetch it with:\n  "+
@@ -119,7 +113,7 @@ func run() error {
 		if err := scanner.RunOnce(ctx); err != nil {
 			return err
 		}
-		return printStats(st, log)
+		return printStats(st, stdout)
 
 	case "reprice":
 		n, err := st.Reprice(ctx, func(m string, in, out, cacheRead, cacheWrite int64) (float64, bool) {
@@ -129,10 +123,10 @@ func run() error {
 			return err
 		}
 		log.Info("repriced", "calls", n, "prices", o.models)
-		return printStats(st, log)
+		return printStats(st, stdout)
 
 	case "stats":
-		return printStats(st, log)
+		return printStats(st, stdout)
 	}
 
 	srv, err := web.New(st, log)
@@ -145,12 +139,27 @@ func run() error {
 	defer cancel()
 
 	if command == "serve-and-scan" {
-		go scanner.Run(ctx, o.interval)
+		var scannerDone sync.WaitGroup
+		scannerDone.Add(1)
+		go func() {
+			defer scannerDone.Done()
+			scanner.Run(ctx, o.interval)
+		}()
+		// Deferred after the store's Close above, so it runs *before* it on every
+		// exit path, including a listener that failed to bind. The scanner is the
+		// only writer, so it has to be stopped before the database goes away;
+		// otherwise a pass is part-way through its transaction when the
+		// connection closes under it.
+		defer func() { waitFor(&scannerDone, log) }()
 	}
 
+	logExposure(o, log)
+
 	httpSrv := &http.Server{
-		Addr:    o.addr,
-		Handler: srv.Handler(),
+		Addr: o.addr,
+		// Authentication is a wrapper rather than something the dashboard knows
+		// about, so this file decides policy and web/ stays a dashboard.
+		Handler: web.WithAuth(o.authToken, log, srv.Handler()),
 		// Generous, because a first render over a large history is genuinely
 		// slower than a static page but not unbounded.
 		ReadHeaderTimeout: 10 * time.Second,
@@ -164,8 +173,10 @@ func run() error {
 	}
 	log.Info("serving",
 		"url", "http://"+ln.Addr().String(),
+		"version", version,
 		"db", o.db,
 		"scanning", command == "serve-and-scan",
+		"auth", o.authToken != "",
 		"interval", o.interval,
 		"pid", os.Getpid())
 	log.Info("press ctrl-c to stop; -verbose for per-request detail")
@@ -185,6 +196,10 @@ func run() error {
 
 	// Stop accepting requests, let in-flight ones finish, then close the
 	// database. Closing it first would fail whatever a request was still using.
+	// The scanner is stopped by the deferred wait below, after Shutdown returns
+	// and before the store closes.
+	// The scanner is stopped by the deferred wait above, after Shutdown returns
+	// and before the store closes.
 	log.Info("shutting down")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
@@ -192,6 +207,71 @@ func run() error {
 		log.Warn("graceful shutdown timed out", "error", err)
 	}
 	return nil
+}
+
+// waitFor blocks until the scanner has stopped, or stopTimeout passes.
+//
+// It is a timeout and not an unbounded wait because a scan pass reads every
+// transcript on the machine; on a cold home directory a stop could take a minute,
+// and a process that ignores ctrl-c is worse than one that exits having rolled
+// back. SQLite transactions are atomic, so a pass killed mid-flight leaves a
+// readable database and the next start re-reads the same files.
+func waitFor(wg *sync.WaitGroup, log *slog.Logger) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(stopTimeout):
+		log.Warn("scanner did not stop within the timeout; exiting mid-pass",
+			"timeout", stopTimeout)
+	}
+}
+
+// logExposure says plainly what the bind address implies. `dashd -addr 0.0.0.0`
+// on a cloud VM is a documented, and reasonable, thing for someone to do — which
+// is exactly why the unauthenticated case needs to be loud at startup rather
+// than discovered later.
+func logExposure(o options, log *slog.Logger) {
+	exposed := exposedToNetwork(o.addr)
+	switch {
+	case !exposed && o.authToken == "":
+		// Nothing to say. Localhost, no token: the normal case, and a warning
+		// here would train the operator to ignore warnings.
+	case exposed && o.authToken == "":
+		log.Warn("serving on a non-loopback address with NO authentication",
+			"addr", o.addr,
+			"exposes", "project paths, session titles, model names and per-session cost to anyone who can reach this port",
+			"reachable_from", "every interface on this host, including its public one",
+			"fix", "set -auth-token, or bind to 127.0.0.1 and reach it over an SSH tunnel")
+	case exposed && o.authToken != "":
+		log.Info("serving on a non-loopback address, protected by -auth-token",
+			"addr", o.addr, "accepts", "Authorization: Bearer, or X-Auth-Token",
+			"exempt", "/healthz")
+	default:
+		log.Info("authentication enabled", "accepts", "Authorization: Bearer, or X-Auth-Token",
+			"exempt", "/healthz")
+	}
+}
+
+// exposedToNetwork reports whether addr binds somewhere other than this machine.
+func exposedToNetwork(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Unparseable is not a reason to be reassuring.
+		return true
+	}
+	switch strings.ToLower(host) {
+	case "":
+		// ":8753" and "0.0.0.0:8753" both mean every interface.
+		return true
+	case "localhost":
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
 }
 
 // warnIfFallbackOnly reports the one degraded-but-working state: the OpenRouter
@@ -222,33 +302,33 @@ func warnIfFallbackOnly(pricer *source.Pricer, modelsPath string, log *slog.Logg
 
 // printStats reports the totals, including how many calls could not be priced at
 // all — the number that says the rate table is missing something.
-func printStats(st *store.Store, log *slog.Logger) error {
+func printStats(st *store.Store, out io.Writer) error {
 	ctx := context.Background()
 	totals, err := st.Totals(ctx, store.Filter{})
 	if err != nil {
 		return err
 	}
 	statuses, _ := st.ScanStatuses()
-	fmt.Printf("calls      %d\n", totals.Calls)
-	fmt.Printf("sessions   %d\n", totals.Sessions)
-	fmt.Printf("projects   %d\n", totals.Projects)
-	fmt.Printf("tokens     %d\n", totals.TotalTokens)
-	fmt.Printf("cost       $%.2f\n", totals.Cost)
+	fmt.Fprintf(out, "calls      %d\n", totals.Calls)
+	fmt.Fprintf(out, "sessions   %d\n", totals.Sessions)
+	fmt.Fprintf(out, "projects   %d\n", totals.Projects)
+	fmt.Fprintf(out, "tokens     %d\n", totals.TotalTokens)
+	fmt.Fprintf(out, "cost       $%.2f\n", totals.Cost)
 	if totals.UnpricedCalls > 0 {
-		fmt.Printf("unpriced   %d calls (no rate found; run `update_models.py`)\n", totals.UnpricedCalls)
+		fmt.Fprintf(out, "unpriced   %d calls (no rate found; run `update_models.py`)\n", totals.UnpricedCalls)
 	}
 	if totals.FirstTS > 0 {
 		oldest, newest, _ := st.HistoryRange(ctx, store.Filter{})
-		fmt.Printf("history    %s to %s\n",
+		fmt.Fprintf(out, "history    %s to %s\n",
 			oldest.Local().Format("2006-01-02"), newest.Local().Format("2006-01-02"))
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 	for _, s := range statuses {
 		state := "ok"
 		if s.Error != "" {
 			state = s.Error
 		}
-		fmt.Printf("%-9s %6d files  %6d changed  %6d calls  %s\n",
+		fmt.Fprintf(out, "%-9s %6d files  %6d changed  %6d calls  %s\n",
 			s.Agent, s.FilesSeen, s.FilesChanged, s.CallsIngested, state)
 	}
 	return nil
@@ -257,10 +337,19 @@ func printStats(st *store.Store, log *slog.Logger) error {
 // defaultModelsPath looks for the price dump next to the repository, which is
 // where it lives in a checkout, and under the data directory otherwise.
 func defaultModelsPath() string {
-	if exe, err := os.Executable(); err == nil {
+	exe, _ := os.Executable()
+	wd, _ := os.Getwd()
+	return modelsPathFrom(exe, wd)
+}
+
+// modelsPathFrom is defaultModelsPath with the two environment lookups handed in,
+// so the search order can be tested against a real filesystem instead of
+// whatever directory the test binary happens to sit in.
+func modelsPathFrom(exePath, workDir string) string {
+	if exePath != "" {
 		// The binary sits beside models.json in a checkout, and one level above
 		// it when installed into ~/bin or /usr/local/bin.
-		dir := filepath.Dir(exe)
+		dir := filepath.Dir(exePath)
 		for _, candidate := range []string{
 			filepath.Join(dir, "models.json"),
 			filepath.Join(filepath.Dir(dir), "models.json"),
@@ -270,10 +359,10 @@ func defaultModelsPath() string {
 			}
 		}
 	}
-	if wd, err := os.Getwd(); err == nil {
+	if workDir != "" {
 		for _, candidate := range []string{
-			filepath.Join(wd, "models.json"),
-			filepath.Join(wd, "..", "models.json"),
+			filepath.Join(workDir, "models.json"),
+			filepath.Join(workDir, "..", "models.json"),
 		} {
 			if _, err := os.Stat(candidate); err == nil {
 				return candidate
