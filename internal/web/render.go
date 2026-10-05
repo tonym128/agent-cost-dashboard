@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"html"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/tonym128/agent-cost-dashboard/internal/store"
@@ -413,18 +412,6 @@ func groupInt64(n int64) string {
 		return "-" + string(out)
 	}
 	return string(out)
-}
-
-// shortPath trims a project path to its last few segments.
-func shortPath(p string) string {
-	if p == "" {
-		return ""
-	}
-	parts := strings.Split(strings.TrimRight(p, "/"), "/")
-	if len(parts) <= 3 {
-		return p
-	}
-	return ".../" + strings.Join(parts[len(parts)-3:], "/")
 }
 
 // ---------------------------------------------------------------- stat cards

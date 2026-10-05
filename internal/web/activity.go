@@ -1,8 +1,10 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -49,7 +51,16 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// An explicit step is validated rather than passed through. A one-second step
+	// over a year of history is tens of millions of rows from a local process,
+	// and the page only ever offers the values below, so anything else is either
+	// a mistake or an attempt to make the server do unbounded work.
 	step := int64(atoiDefault(r.URL.Query().Get("step"), 0))
+	if step > 0 && !isAllowedStep(step) {
+		http.Error(w, fmt.Sprintf(
+			"step must be one of %s seconds", allowedStepsLabel()), http.StatusBadRequest)
+		return
+	}
 	if step <= 0 {
 		step = autoStep(from, to)
 	}
@@ -96,7 +107,8 @@ func autoStep(from, to time.Time) int64 {
 	}
 }
 
-// Steps the page offers for an explicit resolution override.
+// Steps the page offers for an explicit resolution override: 5min, 15min,
+// hourly, 6-hourly, daily.
 var allowedSteps = []int64{300, 900, 3600, 6 * 3600, 86400}
 
 func isAllowedStep(step int64) bool {
@@ -106,6 +118,16 @@ func isAllowedStep(step int64) bool {
 		}
 	}
 	return false
+}
+
+// allowedStepsLabel names the accepted resolutions in the rejection message, so
+// a caller who guessed wrong is told what to use instead.
+func allowedStepsLabel() string {
+	parts := make([]string, 0, len(allowedSteps))
+	for _, s := range allowedSteps {
+		parts = append(parts, strconv.FormatInt(s, 10))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func atoiDefault(s string, def int) int {

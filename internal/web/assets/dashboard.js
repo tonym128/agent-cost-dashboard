@@ -280,18 +280,6 @@ function tokenCellHtml(item) {
     return `<span class="token-cell" title="${escapeHtml(tokenTitle(item))}">${formatCompactNumber(tokenValue(item, 'tokens'))}</span>`;
 }
 
-function aggregateTokenCounts(items) {
-    const totals = {tokens: 0};
-    TOKEN_DETAIL_FIELDS.forEach(([, field]) => { totals[field] = 0; });
-    items.forEach(item => {
-        totals.tokens += tokenValue(item, 'tokens');
-        TOKEN_DETAIL_FIELDS.forEach(([, field]) => {
-            totals[field] += tokenValue(item, field);
-        });
-    });
-    return totals;
-}
-
 function sortData(data, sort) {
     return [...data].sort((a, b) => {
         let aVal = a[sort.field];
@@ -306,6 +294,22 @@ function sortData(data, sort) {
         if (aVal > bVal) return sort.asc ? 1 : -1;
         return 0;
     });
+}
+
+// sessionSortValue is the sort key for one sessions-table column.
+//
+// Two of the columns are not plain fields: Project is the display form of the
+// session's working directory, and Date is an epoch rather than the formatted
+// string the cell shows.
+function sessionSortValue(s, field) {
+    switch (field) {
+        case 'project':
+            return s.cwd || '';
+        case 'start':
+            return Number(s.start) || 0;
+        default:
+            return s[field];
+    }
 }
 
 function renderProjects() {
@@ -376,61 +380,27 @@ function toggleProjectRow(rowId) {
 function renderSessions() {
     const tbody = document.getElementById('sessions-tbody');
 
-    // Flatten sessions with subagent info
-    const allSessionsWithSubs = [];
+    // Sessions arrive nested under their project; the table is flat, so they are
+    // lifted out here. The project's agent command comes along because that is
+    // what knows how to resume one of its sessions.
+    const allSessions = [];
     projects.forEach(p => {
         p.sessions_list.forEach(s => {
-            // Add agent_cmd from parent project for resume command
-            allSessionsWithSubs.push({...s, agent_cmd: p.agent_cmd});
+            allSessions.push({...s, agent_cmd: p.agent_cmd});
         });
     });
 
-    // Helper to get aggregated value for a session (including subagents)
-    function getAggregatedValue(s, field) {
-        const subs = s.subagent_sessions || [];
-        const all = [s, ...subs];
-
-        switch(field) {
-            case 'cost':
-                return all.reduce((sum, session) => sum + session.cost, 0);
-            case 'tokens':
-                return all.reduce((sum, session) => sum + session.tokens, 0);
-            case 'messages':
-                return all.reduce((sum, session) => sum + session.messages, 0);
-            case 'llm_time':
-                return all.reduce((sum, session) => sum + (session.llm_time || 0), 0);
-            case 'tool_time':
-                return all.reduce((sum, session) => sum + (session.tool_time || 0), 0);
-            case 'avg_tps':
-                const tpsValues = all.map(session => session.avg_tps || 0).filter(v => v > 0);
-                return tpsValues.length > 0 ? tpsValues.reduce((a, b) => a + b, 0) / tpsValues.length : 0;
-            case 'duration':
-                const starts = all.map(session => session.start).filter(Boolean);
-                const ends = all.map(session => session.end).filter(Boolean);
-                if (!starts.length || !ends.length) return 0;
-                const earliest = Math.min(...starts.map(d => new Date(d)));
-                const latest = Math.max(...ends.map(d => new Date(d)));
-                return (latest - earliest) / 1000;
-            case 'start':
-                return s.start ? new Date(s.start).getTime() : 0;
-            case 'project':
-                return s.cwd.toLowerCase();
-            default:
-                return s[field] || 0;
-        }
-    }
-
     // Sort sessions using current sort state
-    const sortedSessions = [...allSessionsWithSubs].sort((a, b) => {
-        const aVal = getAggregatedValue(a, sessionsSort.field);
-        const bVal = getAggregatedValue(b, sessionsSort.field);
+    const sortedSessions = [...allSessions].sort((a, b) => {
+        const aVal = sessionSortValue(a, sessionsSort.field);
+        const bVal = sessionSortValue(b, sessionsSort.field);
 
         if (aVal < bVal) return sessionsSort.asc ? -1 : 1;
         if (aVal > bVal) return sessionsSort.asc ? 1 : -1;
         return 0;
     });
 
-    const totalSessions = allSessionsWithSubs.reduce((sum, s) => sum + 1 + (s.subagent_sessions || []).length, 0);
+    const totalSessions = allSessions.length;
     document.getElementById('sessions-count').textContent = totalSessions + ' sessions';
 
     // Search and paging happen here rather than in the browser's own find, so a
@@ -444,7 +414,7 @@ function renderSessions() {
 
     const matches = s => {
         if (!query) return true;
-        return [s.cwd, s.path, s.agent_cmd, s.relative_path]
+        return [s.cwd, s.path, s.agent_cmd, s.title]
             .some(v => String(v || '').toLowerCase().includes(query));
     };
     const visibleSessions = sortedSessions.filter(matches);
@@ -462,160 +432,30 @@ function renderSessions() {
     if (nextBtn) nextBtn.disabled = sessionsPage >= totalPages - 1;
 
     let html = '';
-    let rowIdx = 0;
 
     pageRows.forEach(s => {
-        const subs = s.subagent_sessions || [];
-        const hasSubs = subs.length > 0;
-
-        // If no subagent sessions, just show the main session as a regular row
-        if (!hasSubs) {
-            const sessionUrl = '/session?uid=' + encodeURIComponent(s.uid);
-            const resumePath = s.path.replace(/\\\\/g, '/');
-            const resumeCmd = buildResumeCmd(s.agent_cmd, s.cwd, resumePath, s.uid);
-            const sessionName = displayNameFromPath(s.cwd);
-            const shortProject = sessionName.length > 40 ? sessionName.slice(0, 37) + '...' : sessionName;
-
-            html += `
-                <tr>
-                    <td class="project-name" title="${escapeHtml(s.cwd)}">${escapeHtml(shortProject)}</td>
-                    <td style="color: var(--text-secondary)">${s.start_display}</td>
-                    <td style="color: var(--text-secondary)">${s.duration_display}</td>
-                    <td style="color: var(--accent-purple)">${s.llm_time_display}</td>
-                    <td style="color: var(--accent-yellow)">${s.tool_time_display || '0s'}</td>
-                    <td style="color: var(--accent-blue)">${(s.avg_tps || 0).toFixed(1)}</td>
-                    <td title="${formatFullNumber(s.messages)}">${formatCompactNumber(s.messages)}</td>
-                    <td class="tokens">${tokenCellHtml(s)}</td>
-                    <td class="cost">$${s.cost.toFixed(2)}</td>
-                    <td>
-                        <button onclick="copyResumeCommand(event, this.dataset.resumeCmd)" data-resume-cmd="${escapeHtml(resumeCmd)}" class="icon-btn" title="Copy resume command">Copy</button>
-                        ${s.orphaned
-                        ? '<span class="model-stat" title="This session\'s log is no longer on disk; its figures are kept" style="cursor:default">Log gone</span>'
-                        : `<a href="${sessionUrl}" class="session-link" target="_blank" title="View full session">Open →</a>`}
-                    </td>
-                </tr>
-            `;
-            return;
-        }
-
-        // Has subagent sessions - show expandable summary
-        const allSessionsInGroup = [s, ...subs];
-        const projectId = 'session-group-' + rowIdx;
-        rowIdx++;
-
-        // Calculate aggregated totals
-        const aggCost = allSessionsInGroup.reduce((sum, session) => sum + session.cost, 0);
-        const aggTokenCounts = aggregateTokenCounts(allSessionsInGroup);
-        const aggMessages = allSessionsInGroup.reduce((sum, session) => sum + session.messages, 0);
-        const aggLlmTime = allSessionsInGroup.reduce((sum, session) => sum + (session.llm_time || 0), 0);
-        const aggToolTime = allSessionsInGroup.reduce((sum, session) => sum + (session.tool_time || 0), 0);
-
-        // Get earliest start and latest end
-        const starts = allSessionsInGroup.map(session => session.start).filter(Boolean);
-        const ends = allSessionsInGroup.map(session => session.end).filter(Boolean);
-        const earliestStart = starts.length ? new Date(Math.min(...starts.map(d => new Date(d)))) : null;
-        const latestEnd = ends.length ? new Date(Math.max(...ends.map(d => new Date(d)))) : null;
-        const totalDuration = earliestStart && latestEnd ? (latestEnd - earliestStart) / 1000 : 0;
-
+        const sessionUrl = '/session?uid=' + encodeURIComponent(s.uid);
+        const resumePath = String(s.path || '').replace(/\\\\/g, '/');
+        const resumeCmd = buildResumeCmd(s.agent_cmd, s.cwd, resumePath, s.uid);
         const sessionName = displayNameFromPath(s.cwd);
         const shortProject = sessionName.length > 40 ? sessionName.slice(0, 37) + '...' : sessionName;
 
-        // Format date to match other sessions (YYYY-MM-DD HH:MM)
-        const dateDisplay = s.start_display;
-
-        // Summary row with resume/open buttons
-        const sessionUrl = '/session?uid=' + encodeURIComponent(s.uid);
-        const resumePath = s.path.replace(/\\\\/g, '/');
-        const resumeCmd = buildResumeCmd(s.agent_cmd, s.cwd, resumePath, s.uid);
-
-        // Calculate average tokens/sec for aggregated sessions
-        const tpsValues = allSessionsInGroup.map(session => session.avg_tps || 0).filter(v => v > 0);
-        const aggAvgTps = tpsValues.length > 0 ? tpsValues.reduce((a, b) => a + b, 0) / tpsValues.length : 0;
-
         html += `
-            <tr class="expandable-row" data-target="${projectId}" onclick="toggleProjectRow('${projectId}')">
-                <td class="project-name" title="${escapeHtml(s.cwd)}">
-                    <span class="expand-icon">▶</span>
-                    ${escapeHtml(shortProject)}
-                </td>
-                <td style="color: var(--text-secondary)">${dateDisplay}</td>
-                <td style="color: var(--text-secondary)">${formatDuration(totalDuration)}</td>
-                <td style="color: var(--accent-purple)">${formatDuration(aggLlmTime)}</td>
-                <td style="color: var(--accent-yellow)">${formatDuration(aggToolTime)}</td>
-                <td style="color: var(--accent-blue)">${aggAvgTps.toFixed(1)}</td>
-                <td title="${formatFullNumber(aggMessages)}">${formatCompactNumber(aggMessages)}</td>
-                <td class="tokens">${tokenCellHtml(aggTokenCounts)}</td>
-                <td class="cost">$${aggCost.toFixed(2)}</td>
+            <tr>
+                <td class="project-name" title="${escapeHtml(s.cwd)}">${escapeHtml(shortProject)}</td>
+                <td style="color: var(--text-secondary)">${s.start_display}</td>
+                <td style="color: var(--text-secondary)">${s.duration_display}</td>
+                <td style="color: var(--accent-purple)">${s.llm_time_display}</td>
+                <td style="color: var(--accent-yellow)">${s.tool_time_display || '0s'}</td>
+                <td style="color: var(--accent-blue)">${(s.avg_tps || 0).toFixed(1)}</td>
+                <td title="${formatFullNumber(s.messages)}">${formatCompactNumber(s.messages)}</td>
+                <td class="tokens">${tokenCellHtml(s)}</td>
+                <td class="cost">$${s.cost.toFixed(2)}</td>
                 <td>
-                    <button onclick="event.stopPropagation(); copyResumeCommand(event, this.dataset.resumeCmd)" data-resume-cmd="${escapeHtml(resumeCmd)}" class="icon-btn" title="Copy resume command">Copy</button>
-                    <a href="${sessionUrl}" class="session-link" target="_blank" title="View full session" onclick="event.stopPropagation()">Open →</a>
-                </td>
-            </tr>
-            <tr class="model-breakdown" id="${projectId}">
-                <td colspan="10" style="padding: 0">
-                    <div class="model-tree">
-                        <div class="detail-line"><strong>Path:</strong> ${escapeHtml(s.cwd)}</div>
-                        <div class="detail-line"><strong>Tokens:</strong> ${formatFullNumber(aggTokenCounts.tokens)} ${tokenDetailText(aggTokenCounts) ? `(${escapeHtml(tokenDetailText(aggTokenCounts))})` : ''}</div>
-        `;
-
-        // Main session with buttons
-        html += `
-            <div class="model-item">
-                <span class="model-name" title="${escapeHtml(s.file)}">
-                    <strong>Main session:</strong> ${escapeHtml(s.file)}
-                </span>
-                <span class="model-stat">${s.start_display}</span>
-                <span class="model-stat">${s.duration_display}</span>
-                <span class="model-stat" style="color: var(--accent-purple)">${s.llm_time_display}</span>
-                <span class="model-stat" style="color: var(--accent-yellow)">${s.tool_time_display || '0s'}</span>
-                <span class="model-stat" style="color: var(--accent-blue)">${(s.avg_tps || 0).toFixed(1)} tok/s</span>
-                <span class="model-stat">${formatFullNumber(s.messages)} msgs</span>
-                <span class="model-stat token-wide" title="${escapeHtml(tokenTitle(s))}">${formatFullNumber(s.tokens)} tok</span>
-                <span class="model-stat token-detail-wide">${escapeHtml(tokenDetailText(s))}</span>
-                <span class="model-stat cost">$${s.cost.toFixed(2)}</span>
-                <span style="margin-left: 8px">
                     <button onclick="copyResumeCommand(event, this.dataset.resumeCmd)" data-resume-cmd="${escapeHtml(resumeCmd)}" class="icon-btn" title="Copy resume command">Copy</button>
                     ${s.orphaned
-                        ? '<span class="model-stat" title="This session\'s log is no longer on disk; its figures are kept" style="cursor:default">Log gone</span>'
-                        : `<a href="${sessionUrl}" class="session-link" target="_blank" title="View full session">Open →</a>`}
-                </span>
-            </div>
-        `;
-
-        // Subagent sessions with buttons
-        subs.forEach(sub => {
-            const subSessionUrl = '/session?uid=' + encodeURIComponent(sub.uid);
-            const subResumePath = sub.path.replace(/\\\\/g, '/');
-            // Use parent session's agent_cmd for subagent resume command
-            const subResumeCmd = buildResumeCmd(s.agent_cmd, sub.cwd, subResumePath, sub.uid);
-
-            // Just show the filename, not the full relative path
-            const fileName = sub.file;
-
-            html += `
-                <div class="model-item">
-                    <span class="model-name" title="${escapeHtml(sub.relative_path)}">
-                        ${escapeHtml(fileName)}
-                    </span>
-                    <span class="model-stat">${sub.start_display}</span>
-                    <span class="model-stat">${sub.duration_display}</span>
-                    <span class="model-stat" style="color: var(--accent-purple)">${sub.llm_time_display}</span>
-                    <span class="model-stat" style="color: var(--accent-yellow)">${sub.tool_time_display || '0s'}</span>
-                    <span class="model-stat" style="color: var(--accent-blue)">${(sub.avg_tps || 0).toFixed(1)} tok/s</span>
-                    <span class="model-stat">${formatFullNumber(sub.messages)} msgs</span>
-                    <span class="model-stat token-wide" title="${escapeHtml(tokenTitle(sub))}">${formatFullNumber(sub.tokens)} tok</span>
-                    <span class="model-stat token-detail-wide">${escapeHtml(tokenDetailText(sub))}</span>
-                    <span class="model-stat cost">$${sub.cost.toFixed(2)}</span>
-                    <span style="margin-left: 8px">
-                        <button onclick="copyResumeCommand(event, this.dataset.resumeCmd)" data-resume-cmd="${escapeHtml(subResumeCmd)}" class="icon-btn" title="Copy resume command">Copy</button>
-                        <a href="${subSessionUrl}" class="session-link" target="_blank" title="View full session">Open →</a>
-                    </span>
-                </div>
-            `;
-        });
-
-        html += `
-                    </div>
+                    ? '<span class="model-stat" title="This session\'s log is no longer on disk; its figures are kept" style="cursor:default">Log gone</span>'
+                    : `<a href="${sessionUrl}" class="session-link" target="_blank" title="View full session">Open \u2192</a>`}
                 </td>
             </tr>
         `;
@@ -724,7 +564,6 @@ function updateSortIcons(tableId, sortState) {
 
 // ── Models table sorting ──────────────────────────────────────────────
 const models = dashboardData.models || [];
-const totalCost = dashboardData.totalCost || 1;
 let modelSort = { field: 'cost', asc: false };
 
 function renderModels() {
@@ -733,27 +572,16 @@ function renderModels() {
 
     tbody.innerHTML = sorted.map(m => {
         const modelClass = m.name.toLowerCase().includes('claude') ? 'model-claude' : 'model-other';
-        const tokenDetail = [
-            ['In', m.input_tokens],
-            ['Out', m.output_tokens],
-            ['Cache read', m.cache_read_tokens],
-            ['Cache write', m.cache_write_tokens],
-            ['Reasoning', m.reasoning_tokens],
-        ].filter(([, v]) => v > 0).map(([l, v]) => `${l} ${formatCompactNumber(v)}`).join(' · ');
-        const tokenTitle = [
-            `Total: ${formatFullNumber(m.tokens)}`,
-            `In: ${formatFullNumber(m.input_tokens)}`,
-            `Out: ${formatFullNumber(m.output_tokens)}`,
-            `Cache read: ${formatFullNumber(m.cache_read_tokens)}`,
-            `Cache write: ${formatFullNumber(m.cache_write_tokens)}`,
-            `Reasoning: ${formatFullNumber(m.reasoning_tokens)}`,
-        ].join('\n');
+        // The tooltip lists every token column the row carries, which is what
+        // the breakdown columns exist for: a total alone says nothing about
+        // whether a cheap run was mostly cached.
+        const breakdown = tokenTitle(m);
 
         return `
             <tr>
                 <td><span class="model-tag ${modelClass}">${escapeHtml(m.name)}</span></td>
                 <td title="${formatFullNumber(m.messages)}">${formatCompactNumber(m.messages)}</td>
-                <td class="tokens" title="${escapeHtml(tokenTitle)}">${formatCompactNumber(m.tokens)}</td>
+                <td class="tokens" title="${escapeHtml(breakdown)}">${formatCompactNumber(m.tokens)}</td>
                 <td class="tokens" title="${formatFullNumber(m.input_tokens)}">${formatCompactNumber(m.input_tokens)}</td>
                 <td class="tokens" title="${formatFullNumber(m.output_tokens)}">${formatCompactNumber(m.output_tokens)}</td>
                 <td class="tokens" title="${formatFullNumber(m.cache_read_tokens)}">${formatCompactNumber(m.cache_read_tokens)}</td>
@@ -774,7 +602,6 @@ function renderModels() {
 
 // ── Tools table sorting ───────────────────────────────────────────────
 const tools = dashboardData.tools || [];
-const totalToolTime = dashboardData.totalToolTime || 1;
 let toolSort = { field: 'time', asc: false };
 
 function renderTools() {
@@ -817,97 +644,6 @@ updateSortIcons('projects-table', projectSort);
 updateSortIcons('sessions-table', sessionsSort);
 updateSortIcons('models-table', modelSort);
 updateSortIcons('tools-table', toolSort);
-
-// ── Filter bar ─────────────────────────────────────────────────────────
-(function() {
-    const filterOptions = dashboardData.filterOptions || {
-        models: [],
-        agents: [],
-        projects: [],
-        dateMin: '',
-        dateMax: '',
-    };
-    const filterState = dashboardData.filterState || {
-        models: [],
-        agents: [],
-        projects: [],
-        dateFrom: '',
-        dateTo: '',
-    };
-
-    const modelSelect = document.getElementById('filter-model');
-    const agentSelect = document.getElementById('filter-agent');
-    const projectSelect = document.getElementById('filter-project');
-    const dateFromInput = document.getElementById('filter-date-from');
-    const dateToInput = document.getElementById('filter-date-to');
-    const applyBtn = document.getElementById('filter-apply');
-    const clearBtn = document.getElementById('filter-clear');
-
-    if (!modelSelect || !applyBtn) return; // Filter bar not rendered
-
-    // Selection is already rendered server-side, where the model list is
-    // matched on the normalized name against the raw option values. Re-deriving
-    // it here would compare a normalized filter value to a raw option value
-    // and silently clear the selected model.
-    if (dateFromInput) dateFromInput.value = filterState.dateFrom;
-    if (dateToInput) dateToInput.value = filterState.dateTo;
-
-    function buildFilterUrl() {
-        const params = new URLSearchParams();
-        const selectedModels = Array.from(modelSelect.selectedOptions).map(o => o.value);
-        const selectedAgents = Array.from(agentSelect.selectedOptions).map(o => o.value);
-        const selectedProjects = Array.from(projectSelect.selectedOptions).map(o => o.value);
-        const dateFrom = dateFromInput?.value || '';
-        const dateTo = dateToInput?.value || '';
-
-        if (selectedModels.length) selectedModels.forEach(m => params.append('model', m));
-        if (selectedAgents.length) selectedAgents.forEach(a => params.append('agent', a));
-        if (selectedProjects.length) selectedProjects.forEach(p => params.append('project', p));
-        if (dateFrom) params.set('date_from', dateFrom);
-        if (dateTo) params.set('date_to', dateTo);
-
-        // Carry the activity chart's own controls across, or applying a filter
-        // would silently reset the window and metric back to their defaults.
-        ['aw', 'am', 'as'].forEach(key => {
-            const value = new URLSearchParams(window.location.search).get(key);
-            if (value) params.set(key, value);
-        });
-
-        const base = window.location.pathname;
-        return params.toString() ? base + '?' + params.toString() : base;
-    }
-
-    applyBtn.addEventListener('click', () => {
-        window.location.href = buildFilterUrl();
-    });
-
-    clearBtn.addEventListener('click', () => {
-        window.location.href = window.location.pathname;
-    });
-
-    // Keyboard support for multi-select: Space to toggle, Enter to apply
-    [modelSelect, agentSelect, projectSelect].forEach(select => {
-        select.addEventListener('keydown', e => {
-            if (e.key === ' ' || e.key === 'Enter') {
-                e.preventDefault();
-                const focused = document.activeElement;
-                if (focused && focused.tagName === 'OPTION') {
-                    focused.selected = !focused.selected;
-                }
-            }
-            if (e.key === 'Enter') {
-                buildFilterUrl();
-            }
-        });
-    });
-
-    // Double-click to apply
-    [modelSelect, agentSelect, projectSelect].forEach(select => {
-        select.addEventListener('dblclick', () => {
-            window.location.href = buildFilterUrl();
-        });
-    });
-})();
 
 // Activity & throughput: messages sent, tokens produced, and how quickly
 // responses came back, over a rolling window that ends at the newest call.
@@ -977,8 +713,6 @@ updateSortIcons('tools-table', toolSort);
 
     // The controls live in the query string, like the filter bar, so a reload or
     // a shared link keeps the view.
-    const CONTROL_PARAMS = ['aw', 'am', 'as'];
-
     function readControlState() {
         const params = new URLSearchParams(window.location.search);
         const apply = (el, value, fallback) => {

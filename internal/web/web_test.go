@@ -1,6 +1,7 @@
 package web
 
 import (
+	"embed"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -319,6 +320,17 @@ func TestUnknownPathIsNotFound(t *testing.T) {
 
 // ---------------------------------------------------------------- helpers
 
+// readAsset reads one of the embedded files the page is served from, so the
+// test measures what is actually shipped rather than a copy on disk.
+func readAsset(t *testing.T, fs embed.FS, name string) string {
+	t.Helper()
+	data, err := fs.ReadFile(name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return string(data)
+}
+
 // dashboardPayload extracts and decodes the JSON the page hands to its script.
 func dashboardPayload(t *testing.T, body string) map[string]any {
 	t.Helper()
@@ -357,8 +369,66 @@ func seedAt(t *testing.T, st *store.Store, ts time.Time) {
 	}
 }
 
-func newTestStoreWithCall(t *testing.T, ts time.Time) (*Server, *store.Store) {
+// ---------------------------------------------------------------- step validation
+
+func TestActivityAPIAcceptsAnOfferedStep(t *testing.T) {
 	srv, st := newTestServer(t)
-	seedAt(t, st, ts)
-	return srv, st
+	seed(t, st, time.Now())
+	// 3600 is one of the resolutions the page offers.
+	rec := get(t, srv, "/api/activity?range=86400&step=3600")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d for an offered step, want 200", rec.Code)
+	}
+	var out struct {
+		Step int64 `json:"step"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Step != 3600 {
+		t.Errorf("step = %d, want 3600", out.Step)
+	}
+}
+
+func TestActivityAPIRejectsAnUnboundedStep(t *testing.T) {
+	srv, st := newTestServer(t)
+	seed(t, st, time.Now())
+	// One second over years of history is tens of millions of rows from a
+	// local process; the page never asks for it, so it is refused rather than
+	// served.
+	for _, step := range []string{"1", "7", "86401", "999999999"} {
+		rec := get(t, srv, "/api/activity?range=0&step="+step)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status %d for step=%s, want 400", rec.Code, step)
+		}
+		if !strings.Contains(rec.Body.String(), "step must be one of") {
+			t.Errorf("rejection for step=%s does not say what is allowed: %q",
+				step, rec.Body.String())
+		}
+	}
+}
+
+// The sub-agent grouping UI was driven by a `subagent_sessions` key that no Go
+// code emits: it survived a Python-to-Go rewrite whose data model dropped it.
+// There is no sub-agent relationship in the session table to recover it from, so
+// the code is gone rather than left waiting for data that will not arrive.
+func TestJSHasNoSubAgentGrouping(t *testing.T) {
+	script := readAsset(t, assets, "assets/dashboard.js")
+	for _, dead := range []string{"subagent_sessions", "aggregateTokenCounts"} {
+		if strings.Contains(script, dead) {
+			t.Errorf("dashboard.js still contains %q, which no Go code emits", dead)
+		}
+	}
+}
+
+// The filter bar is a plain GET form in the template; the IIFE that drove
+// filter-model/filter-agent/filter-apply exited at its first null check, so
+// every header click was a no-op while looking wired.
+func TestJSHasNoDeadFilterBar(t *testing.T) {
+	script := readAsset(t, assets, "assets/dashboard.js")
+	for _, dead := range []string{"filter-model", "filter-agent", "filter-apply"} {
+		if strings.Contains(script, dead) {
+			t.Errorf("dashboard.js still targets %q, which is not in the template", dead)
+		}
+	}
 }
