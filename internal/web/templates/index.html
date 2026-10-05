@@ -310,14 +310,14 @@
   </footer>
 </div>
 
-<script>window.dashboardData = {{.PayloadJSON}};</script>
-<script>window.filterState = {
+<script nonce="{{.Nonce}}">window.dashboardData = {{.PayloadJSON}};</script>
+<script nonce="{{.Nonce}}">window.filterState = {
   models: {{jsonList .FilterState.Models}},
   agents: {{jsonList .FilterState.Agents}},
   projects: {{jsonList .FilterState.Projects}}
 };</script>
 <script src="/assets/dashboard.js"></script>
-<script>
+<script nonce="{{.Nonce}}">
 (function() {
   // Prefill the filter form from the query, so a reload or a shared link shows
   // the same view rather than an empty form over filtered data.

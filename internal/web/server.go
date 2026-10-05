@@ -60,7 +60,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/assets/", s.handleAsset)
 	mux.HandleFunc("/api/activity", s.handleActivity)
 	mux.Handle("/session", http.HandlerFunc(s.handleSession))
-	return logRequests(s.log, mux)
+	// Outermost, so the headers are on every response the dashboard produces —
+	// including the assets, which is where a policy that only covered documents
+	// would be one bypass away from useless.
+	return withSecurityHeaders(logRequests(s.log, mux))
 }
 
 func logRequests(log *slog.Logger, next http.Handler) http.Handler {
@@ -133,6 +136,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			fmt.Errorf("the scan may still be populating it; try again in a moment"))
 		return
 	}
+	// The payload goes into two inline <script> blocks, so it needs the nonce
+	// from withSecurityHeaders: the CSP permits those blocks and nothing else.
+	data.Nonce = nonceFrom(ctx)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
@@ -150,8 +156,11 @@ func (s *Server) errorPage(w http.ResponseWriter, code int, title string, err er
 
 // pageData is what the template renders from.
 type pageData struct {
-	Generated   string
-	StatCards   []statCard
+	Generated string
+	StatCards []statCard
+	// Nonce is the per-response CSP nonce, carried to the two inline <script>
+	// blocks that hold the payload and the filter state.
+	Nonce       string
 	PayloadJSON template.JS
 	FilterState filterState
 	Facets      facets
