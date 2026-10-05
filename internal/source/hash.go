@@ -78,23 +78,11 @@ func headFingerprintLimited(path string, n int64) (string, int64) {
 		return "", int64(got)
 	}
 	_ = err
+	if n == 0 {
+		// The same form headFingerprint gives an empty file. The two have to
+		// agree: a fingerprint that does not compare equal to itself means an
+		// empty log is treated as rewritten on every pass.
+		return "empty:" + shortHash(path), 0
+	}
 	return shortHash(string(buf[:got])), int64(got)
-}
-
-func prefixHash(path string, n int) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	buf := make([]byte, n)
-	got, err := io.ReadFull(f, buf)
-	if got == 0 {
-		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			return ""
-		}
-		// An empty file: a value that cannot collide with any non-empty head.
-		return "empty:" + shortHash(path)
-	}
-	return shortHash(string(buf[:got]))
 }

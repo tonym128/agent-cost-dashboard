@@ -138,24 +138,6 @@ func countLinesBefore(path string, n int64) (int64, error) {
 
 // ---------------------------------------------------------------- helpers
 
-// nested walks a path of map keys, returning the value found and whether the
-// whole path existed. Agent logs nest inconsistently and a missing key several
-// levels down must not panic.
-func nested(obj map[string]any, path ...string) (any, bool) {
-	var cur any = obj
-	for _, key := range path {
-		m, ok := cur.(map[string]any)
-		if !ok {
-			return nil, false
-		}
-		cur, ok = m[key]
-		if !ok {
-			return nil, false
-		}
-	}
-	return cur, true
-}
-
 // str returns a string field, or "" when absent or of another type.
 func str(obj map[string]any, key string) string {
 	v, ok := obj[key]

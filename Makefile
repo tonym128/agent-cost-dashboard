@@ -24,8 +24,6 @@ IMAGE ?= dashd:dev
 # so they cannot be forgotten. Remove each line once the Go change lands.
 #
 #   -U1000  unused code, currently:
-#             internal/source/hash.go:prefixHash
-#             internal/source/jsonl.go:nested
 #             internal/web/activity.go:allowedSteps, isAllowedStep
 #             internal/web/render.go:shortPath
 #             internal/web/web_test.go:newTestStoreWithCall
