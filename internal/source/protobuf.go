@@ -13,6 +13,30 @@ package source
 // produce an arbitrary-precision integer.
 const maxVarintBytes = 10
 
+// maxFieldNum is the largest field number protobuf permits: 29 bits. The wire
+// format allows a key varint of up to 32 bits before the field number, and a
+// field number of 2^29 or more is reserved rather than valid.
+const maxFieldNum = 1<<29 - 1
+
+// fieldNumOf decodes a key varint's field number, reporting ok=false when it is
+// not a field number a message can legally carry.
+//
+// Truncating the key to int32 instead would let a field number of 2^32+2 wrap
+// onto 2 — a real, low, valid field number that a caller looks up by name. Since
+// agyUsageInput is field 2, a corrupt blob could write an arbitrary count into
+// the input bucket of a step that has no such field, and the wrapped number
+// would pass every "is this plausible" check a reader applies.
+//
+// Protobuf field numbers are at most 29 bits, so nothing valid is rejected here:
+// a 29-bit number is compared against a 64-bit key before any narrowing happens.
+func fieldNumOf(key uint64) (int32, bool) {
+	n := key >> 3
+	if n < 1 || n > maxFieldNum {
+		return 0, false
+	}
+	return int32(n), true
+}
+
 // PBField is one decoded protobuf field.
 type PBField struct {
 	Num  int32
@@ -37,13 +61,14 @@ func ProtoDecode(data []byte) []PBField {
 			return out
 		}
 		i = next
-		fieldNum := int32(key >> 3)
+		fieldNum, ok := fieldNumOf(key)
 		wire := int(key & 7)
-		// Protobuf field numbers start at 1. A key decoding to 0 or a negative
-		// number is not a field at all, and reporting one would index a map under
-		// a key nothing can ask for, so the scan stops here as it does for any
-		// other malformed construct.
-		if fieldNum < 1 {
+		// A key whose field number is 0, negative or wider than protobuf's 29
+		// bits is not a field at all, and reporting one would index a map under a
+		// key nothing can ask for — or, worse, under a *valid* key the caller
+		// reads a real field from. The scan stops here, as for any other
+		// malformed construct.
+		if !ok {
 			return out
 		}
 
@@ -105,11 +130,11 @@ func ProtoField(data []byte, fieldNum int32, wire int) (PBField, bool) {
 			return PBField{}, false
 		}
 		i = next
-		fn := int32(key >> 3)
-		wt := int(key & 7)
-		if fn < 1 {
+		fn, ok := fieldNumOf(key)
+		if !ok {
 			return PBField{}, false
 		}
+		wt := int(key & 7)
 
 		switch wt {
 		case 2:
