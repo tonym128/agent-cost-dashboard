@@ -86,7 +86,13 @@ func TestPricerCostArithmetic(t *testing.T) {
 	// A million input tokens at the published Gemini 2.5 Pro rate.
 	cost, ok := p.Cost("gemini-2.5-pro", 1_000_000, 0, 0, 0)
 	if !ok {
-		t.Skip("gemini-2.5-pro not priced in this environment")
+		// Not a skip. models.json is a committed fixture, so a model the tests
+		// price going missing is a broken fixture rather than an environment to
+		// skip for: deleting the model from the dump turned this into a
+		// skip-then-pass, which reported success for a test that checked nothing.
+		t.Fatal("gemini-2.5-pro is not priced. models.json is committed, so a model " +
+			"the tests depend on going missing is a broken fixture, not an " +
+			"environment to skip for")
 	}
 	if cost < 1.20 || cost > 1.30 {
 		t.Errorf("1M input tokens of gemini-2.5-pro cost %v, want about 1.25", cost)
