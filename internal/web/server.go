@@ -157,6 +157,10 @@ type pageData struct {
 	Facets      facets
 	Scan        []scanStatusView
 	ScanSummary string
+	// Burn is the cost headline: Today, 7d, 30d and month-to-date, each with
+	// the change against the equivalent prior period.
+	Burn     []burnCard
+	BurnNote string
 	// Sources is the source-detection panel: one row per agent this build can
 	// read, and whether its logs were found. SourcesNeedAction decides whether
 	// it is shown at all.
@@ -252,14 +256,18 @@ func (s *Server) buildPayload(ctx context.Context, filter store.Filter, query ur
 
 	views, _ := s.scanViews(ctx)
 	sources := sourceViews(views)
+	now := s.Generated()
+	burn := burnWindows(daily, now)
 	return pageData{
-		Generated:      s.Generated().Format("2006-01-02 15:04:05"),
+		Generated:      now.Format("2006-01-02 15:04:05"),
 		StatCards:      statCards(totals),
 		PayloadJSON:    template.JS(encoded),
 		FilterState:    parseFilterState(query),
 		Facets:         view,
 		Scan:           views,
 		ScanSummary:    scanSummary(views),
+		Burn:           burnCards(burn),
+		BurnNote:       burnNote(burn),
 		Sources:        sources,
 		SourcesSummary: sourceSummary(sources),
 		// Shown whenever a source needs attention, and also when the database

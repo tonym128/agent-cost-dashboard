@@ -845,6 +845,85 @@ func sourceSummaryOf(body string) string {
 	return rest[:j]
 }
 
+// ---------------------------------------------------------------- burn rate
+
+func TestBurnWindowsCompareAgainstThePriorPeriod(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.Local)
+	daily := []store.DayBucket{
+		{Day: "2026-10-05", Cost: 10}, // today
+		{Day: "2026-10-04", Cost: 5},  // yesterday
+		{Day: "2026-10-03", Cost: 2},
+		{Day: "2026-10-02", Cost: 2},
+		{Day: "2026-10-01", Cost: 1},
+		{Day: "2026-09-30", Cost: 4},
+		{Day: "2026-09-29", Cost: 6},
+		{Day: "2026-09-28", Cost: 40}, // inside the prior 7 days
+		{Day: "2026-09-03", Cost: 50}, // inside the prior month-to-date
+	}
+	ws := burnWindows(daily, now)
+	if len(ws) != 4 {
+		t.Fatalf("got %d windows, want 4", len(ws))
+	}
+	byLabel := map[string]burnWindow{}
+	for _, w := range ws {
+		byLabel[w.Label] = w
+	}
+
+	today := byLabel["Today"]
+	if today.Cost != 10 || today.PriorCost != 5 {
+		t.Errorf("Today = %.2f vs %.2f, want 10 vs 5", today.Cost, today.PriorCost)
+	}
+	// The 7-day window is 29 Sep through 5 Oct = 6+4+1+2+2+5+10 = 30; the seven
+	// days before that hold only the 40.
+	week := byLabel["Last 7 days"]
+	if week.Cost != 30 {
+		t.Errorf("7-day cost = %.2f, want 30", week.Cost)
+	}
+	if week.PriorCost != 40 {
+		t.Errorf("prior 7-day cost = %.2f, want 40", week.PriorCost)
+	}
+	pct, ok := week.delta()
+	if !ok || pct != -25 {
+		t.Errorf("7-day delta = %.1f%% (ok=%v), want -25%%", pct, ok)
+	}
+	// October so far is the 5th, so the prior window is 1-5 September, which
+	// holds the 50 but not the 40 from the 28th.
+	mtd := byLabel["Month to date"]
+	if mtd.Cost != 20 {
+		t.Errorf("MTD cost = %.2f, want 20", mtd.Cost)
+	}
+	if mtd.PriorCost != 50 {
+		t.Errorf("MTD prior cost = %.2f, want 50", mtd.PriorCost)
+	}
+}
+
+func TestBurnWindowWithNoPriorSpendSaysSoRatherThanAPercentage(t *testing.T) {
+	// "No prior spend" beats "+100%": there is no percentage to compute.
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.Local)
+	ws := burnWindows([]store.DayBucket{{Day: "2026-10-05", Cost: 3}}, now)
+	for _, c := range burnCards(ws) {
+		if c.Label == "Today" {
+			if c.Delta != "no prior spend" {
+				t.Errorf("Today delta = %q, want %q", c.Delta, "no prior spend")
+			}
+			return
+		}
+	}
+	t.Fatal("no Today card")
+}
+
+func TestBurnRowIsOnThePage(t *testing.T) {
+	srv, st := newTestServer(t)
+	seed(t, st, time.Now())
+	body := get(t, srv, "/").Body.String()
+	for _, want := range []string{`id="burn-rate"`, "Today", "Last 7 days",
+		"Last 30 days", "Month to date"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page is missing burn-rate figure %q", want)
+		}
+	}
+}
+
 func TestSourceStateIsUsableAsACSSClass(t *testing.T) {
 	// The state slug goes straight into a class attribute, and every slug has a
 	// style. "not scanned" produced class="source-not scanned", which is two

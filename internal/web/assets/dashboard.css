@@ -1032,3 +1032,59 @@ footer {
     color: var(--text-primary);
     font-size: 15px;
 }
+
+/* ── Burn-rate headline ──────────────────────────────────────────────────
+   The cost figures a reader acts on, each against the period before it.
+   Lifetime total cost is a number that only goes up and that nobody can act
+   on; these four can be compared week to week. Colour comes from the
+   existing tokens: amber for rising spend, green for falling, neutral when
+   there is nothing to compare against. */
+.burn-rate {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 8px;
+}
+
+.burn-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.burn-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+}
+
+.burn-value {
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--accent-green);
+    margin-top: 2px;
+}
+
+.burn-delta {
+    font-size: 13px;
+    font-weight: 600;
+    margin-top: 2px;
+}
+
+.burn-delta.burn-up { color: var(--accent-yellow); }
+.burn-delta.burn-down { color: var(--accent-green); }
+.burn-delta.burn-flat { color: var(--text-secondary); font-weight: 400; }
+
+.burn-detail {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.burn-note {
+    margin: 0 0 24px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}

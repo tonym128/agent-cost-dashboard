@@ -87,6 +87,18 @@
   </div>
   {{end}}
 
+  <div class="burn-rate" id="burn-rate">
+    {{range .Burn}}
+    <div class="burn-card">
+      <div class="burn-label">{{.Label}}</div>
+      <div class="burn-value">{{.Value}}</div>
+      <div class="burn-delta {{.DeltaClass}}">{{.Delta}}</div>
+      <div class="burn-detail">{{.Detail}}</div>
+    </div>
+    {{end}}
+  </div>
+  <p class="burn-note">{{.BurnNote}}</p>
+
   <div class="stats-grid">
     {{range .StatCards}}
     <div class="stat-card{{if .Wide}} token-card{{end}}">

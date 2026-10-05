@@ -491,7 +491,7 @@ function renderSessions() {
 
     pageRows.forEach(s => {
         const sessionUrl = '/session?uid=' + encodeURIComponent(s.uid);
-        const resumePath = String(s.path || '').replace(/\\\\/g, '/');
+        const resumePath = String(s.path || '').replace(/\\/g, '/');
         const resumeCmd = buildResumeCmd(s.agent_cmd, s.cwd, resumePath, s.uid);
         const sessionName = displayNameFromPath(s.cwd);
         const shortProject = sessionName.length > 40 ? sessionName.slice(0, 37) + '...' : sessionName;
