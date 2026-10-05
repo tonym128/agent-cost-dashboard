@@ -483,6 +483,10 @@ func (p *OpenCodeParser) parseWith(db *sql.DB, sessionID string, prev model.Scan
 	for _, list := range partsByMsg {
 		sortParts(list)
 	}
+	inBatch := make(map[string]bool, len(msgs))
+	for _, m := range msgs {
+		inBatch[m.id] = true
+	}
 
 	maxCursor := since
 	for _, m := range msgs {
@@ -496,12 +500,39 @@ func (p *OpenCodeParser) parseWith(db *sql.DB, sessionID string, prev model.Scan
 		}
 		p.consumeMessage(b, m.id, m.created, m.data, partsByMsg[m.id], modelName, pricer)
 	}
-	for _, list := range partsByMsg {
+
+	// A part can be newer than the message it belongs to, because OpenCode
+	// updates the two rows independently: a tool result lands on an assistant
+	// message whose row is not itself touched. The message cursor then does not
+	// bring that message into this batch, and since a part is only ever rendered
+	// by walking the messages, the part was read, dropped, and — because the
+	// cursor below advanced past it — never read again. The tool call was lost
+	// permanently, not merely late.
+	//
+	// So every part whose message is not in the batch is rendered against its
+	// message directly. Its message row is fetched by id rather than filtered by
+	// the cursor, since the whole point is that the cursor did not select it.
+	// Passing no message data means no call is produced for it: the message was
+	// already ingested under the same call key on the pass that did read it, and
+	// only its parts are outstanding.
+	for id, list := range partsByMsg {
+		if inBatch[id] {
+			continue
+		}
+		created, ok := messageCreated(db, id)
+		if !ok {
+			// The message row is gone. Its parts cannot be attributed to
+			// anything, and re-reading them on every future pass would stall the
+			// cursor for a row that will never arrive, so they are dropped and
+			// the cursor is allowed past them.
+			continue
+		}
 		for _, pr := range list {
 			if pr.updated > maxCursor {
 				maxCursor = pr.updated
 			}
 		}
+		p.consumeMessage(b, id, created, nil, list, modelName, pricer)
 	}
 
 	next.Offset = maxCursor
@@ -516,6 +547,20 @@ type partRow struct {
 	updated int64
 	rowid   int64
 	data    map[string]any
+}
+
+// messageCreated reads one message's creation time by id, unfiltered by any
+// cursor, and reports ok=false when the row is not there.
+//
+// A part and its message are written independently, so a part can be newer than
+// the message cursor while the message itself is older than it. The message is
+// still in the database; it simply is not in this batch.
+func messageCreated(db *sql.DB, id string) (int64, bool) {
+	var created int64
+	if err := db.QueryRow("SELECT time_created FROM message WHERE id = ?", id).Scan(&created); err != nil {
+		return 0, false
+	}
+	return created, true
 }
 
 func (p *OpenCodeParser) consumeMessage(b *sessionBuilder, id string, created int64, data map[string]any, parts []partRow, modelName string, pricer *Pricer) {
