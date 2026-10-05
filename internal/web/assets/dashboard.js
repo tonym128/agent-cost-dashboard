@@ -289,20 +289,38 @@ function tokenCellHtml(item) {
     return `<span class="token-cell" title="${escapeHtml(tokenTitle(item))}">${formatCompactNumber(tokenValue(item, 'tokens'))}</span>`;
 }
 
-function sortData(data, sort) {
-    return [...data].sort((a, b) => {
-        let aVal = a[sort.field];
-        let bVal = b[sort.field];
+// Column sort.
+//
+// Values are compared numerically whenever both sides parse as numbers, which
+// is not a nicety: comparing them as text puts "1000" before "900", and every
+// token count past six digits sorts as a string. Ties fall back to the row's
+// original position, so equal values keep a stable order rather than shuffling
+// between renders.
+function compareValues(a, b) {
+    const aNum = a !== null && a !== undefined && a !== '' && Number.isFinite(Number(a));
+    const bNum = b !== null && b !== undefined && b !== '' && Number.isFinite(Number(b));
+    if (aNum && bNum) {
+        const na = Number(a);
+        const nb = Number(b);
+        return na < nb ? -1 : na > nb ? 1 : 0;
+    }
+    const sa = String(a == null ? '' : a).toLowerCase();
+    const sb = String(b == null ? '' : b).toLowerCase();
+    if (sa < sb) return -1;
+    if (sa > sb) return 1;
+    return 0;
+}
 
-        if (typeof aVal === 'string') {
-            aVal = aVal.toLowerCase();
-            bVal = bVal.toLowerCase();
-        }
-
-        if (aVal < bVal) return sort.asc ? -1 : 1;
-        if (aVal > bVal) return sort.asc ? 1 : -1;
-        return 0;
-    });
+function sortData(data, sort, accessor) {
+    const get = accessor || (row => row[sort.field]);
+    return data
+        .map((row, idx) => ({row, idx, key: get(row)}))
+        .sort((a, b) => {
+            const cmp = compareValues(a.key, b.key);
+            if (cmp !== 0) return sort.asc ? cmp : -cmp;
+            return a.idx - b.idx;
+        })
+        .map(entry => entry.row);
 }
 
 // sessionSortValue is the sort key for one sessions-table column.
@@ -399,15 +417,10 @@ function renderSessions() {
         });
     });
 
-    // Sort sessions using current sort state
-    const sortedSessions = [...allSessions].sort((a, b) => {
-        const aVal = sessionSortValue(a, sessionsSort.field);
-        const bVal = sessionSortValue(b, sessionsSort.field);
-
-        if (aVal < bVal) return sessionsSort.asc ? -1 : 1;
-        if (aVal > bVal) return sessionsSort.asc ? 1 : -1;
-        return 0;
-    });
+    // Sort sessions using current sort state. sessionSortValue supplies the two
+    // keys that are not plain fields.
+    const sortedSessions = sortData(allSessions, sessionsSort,
+        s => sessionSortValue(s, sessionsSort.field));
 
     const totalSessions = allSessions.length;
     document.getElementById('sessions-count').textContent = totalSessions + ' sessions';
@@ -540,18 +553,31 @@ function setupSessionsToolbar() {
     });
 }
 
+// Columns that read as ascending-first: names and dates. Everything else is a
+// magnitude, where the useful first click is "largest first".
+const ASCENDING_FIRST = new Set(['name', 'project', 'start']);
+
 function setupSorting(tableId, sortState, renderFn) {
     document.querySelectorAll(`#${tableId} th[data-sort]`).forEach(th => {
-        th.addEventListener('click', () => {
-            const field = th.dataset.sort;
+        const field = th.dataset.sort;
+        const activate = () => {
             if (sortState.field === field) {
                 sortState.asc = !sortState.asc;
             } else {
                 sortState.field = field;
-                sortState.asc = field === 'name' || field === 'project' || field === 'start';
+                sortState.asc = ASCENDING_FIRST.has(field);
             }
             updateSortIcons(tableId, sortState);
             renderFn();
+        };
+        th.addEventListener('click', activate);
+        th.setAttribute('tabindex', '0');
+        th.setAttribute('role', 'button');
+        th.addEventListener('keydown', e => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                activate();
+            }
         });
     });
 }
@@ -564,9 +590,14 @@ function updateSortIcons(tableId, sortState) {
         if (field === sortState.field) {
             th.classList.add('sorted');
             icon.textContent = sortState.asc ? '▲' : '▼';
+            th.setAttribute('aria-sort', sortState.asc ? 'ascending' : 'descending');
+            th.title = 'Sorted ' + (sortState.asc ? 'ascending' : 'descending') +
+                '; click to reverse';
         } else {
             th.classList.remove('sorted');
             icon.textContent = '▼';
+            th.setAttribute('aria-sort', 'none');
+            th.title = 'Sort by this column';
         }
     });
 }

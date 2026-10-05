@@ -653,3 +653,89 @@ func TestProjectsAreListedOncePerProjectNotOncePerAgent(t *testing.T) {
 		t.Errorf("merged row lists %d agents, want 2", len(agents))
 	}
 }
+
+// ---------------------------------------------------------------- sorting
+
+func TestEverySortableHeaderIsWiredUp(t *testing.T) {
+	// The sort handlers bind to th[data-sort] and updateSortIcons looks for a
+	// .sort-icon inside the same cell. A heading with one but not the other is
+	// either a dead click or an arrow that never moves.
+	page := readAsset(t, templateFS, "templates/index.html")
+	re := regexp.MustCompile(`<th[^>]*data-sort="[^"]+"[^>]*>([^<]*)<span class="sort-icon">`)
+	found := re.FindAllStringSubmatch(page, -1)
+	if len(found) < 20 {
+		t.Fatalf("only %d sortable headers found; the data-sort hooks are missing", len(found))
+	}
+	for _, m := range found {
+		if strings.TrimSpace(m[1]) == "" {
+			t.Error("a sortable header has an empty heading")
+		}
+	}
+}
+
+func TestSortFieldsExistInThePayload(t *testing.T) {
+	// A data-sort naming a field the payload does not carry sorts an undefined
+	// column: every row ties and the click appears to do nothing.
+	srv, st := newTestServer(t)
+	seed(t, st, time.Now())
+	payload := dashboardPayload(t, get(t, srv, "/").Body.String())
+
+	rows := map[string][]any{}
+	for _, key := range []string{"projects", "models", "tools"} {
+		list, _ := payload[key].([]any)
+		if len(list) > 0 {
+			rows[key] = list
+		}
+	}
+	if len(rows) != 3 {
+		t.Fatalf("fixture produced rows for %d of 3 tables", len(rows))
+	}
+	// Sorted session fields are checked against the sessions the page nests
+	// under each project.
+	var session map[string]any
+	for _, p := range rows["projects"] {
+		row, _ := p.(map[string]any)
+		if list, _ := row["sessions_list"].([]any); len(list) > 0 {
+			session, _ = list[0].(map[string]any)
+			break
+		}
+	}
+	if session == nil {
+		t.Fatal("fixture produced no session rows")
+	}
+
+	cases := map[string][]string{
+		"projects": {"name", "sessions", "messages", "tokens", "llm_time",
+			"tool_time", "avg_tps", "cost", "last_activity"},
+		"models": {"name", "messages", "tokens", "input_tokens", "output_tokens",
+			"cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+			"avg_tps", "cost", "pct"},
+		"tools": {"name", "calls", "time", "avg_seconds", "errors", "cost"},
+	}
+	for table, fields := range cases {
+		for _, f := range fields {
+			if _, ok := rows[table][0].(map[string]any)[f]; !ok {
+				t.Errorf("%s sorts on %q, which its rows do not carry", table, f)
+			}
+		}
+	}
+	for _, f := range []string{"cwd", "start", "duration", "llm_time", "tool_time",
+		"avg_tps", "messages", "tokens", "cost"} {
+		if _, ok := session[f]; !ok {
+			t.Errorf("sessions-table sorts on %q, which its rows do not carry", f)
+		}
+	}
+}
+
+func TestSortComparesNumbersAsNumbers(t *testing.T) {
+	// The regression this guards: a hand-rolled comparator that lowercases
+	// strings and falls through to `<` sorts "1000" before "900", which is
+	// wrong for every token column on the page.
+	script := readAsset(t, assets, "assets/dashboard.js")
+	if !strings.Contains(script, "Number.isFinite(Number(a))") {
+		t.Error("the sort comparator does not have a numeric path")
+	}
+	if !strings.Contains(script, "return a.idx - b.idx;") {
+		t.Error("the sort has no stable tiebreak, so equal rows reshuffle per render")
+	}
+}

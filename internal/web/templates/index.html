@@ -158,15 +158,15 @@
     <table id="sessions-table">
       <thead>
         <tr>
-          <th>Project / Session</th>
-          <th>Date</th>
-          <th>Duration</th>
-          <th>LLM Time</th>
-          <th>Tool Time</th>
-          <th>Tokens/s</th>
-          <th>Messages</th>
-          <th>Tokens</th>
-          <th>Cost</th>
+          <th data-sort="project">Project / Session <span class="sort-icon">▼</span></th>
+          <th data-sort="start">Date <span class="sort-icon">▼</span></th>
+          <th data-sort="duration">Duration <span class="sort-icon">▼</span></th>
+          <th data-sort="llm_time">LLM Time <span class="sort-icon">▼</span></th>
+          <th data-sort="tool_time">Tool Time <span class="sort-icon">▼</span></th>
+          <th data-sort="avg_tps">Tokens/s <span class="sort-icon">▼</span></th>
+          <th data-sort="messages">Messages <span class="sort-icon">▼</span></th>
+          <th data-sort="tokens">Tokens <span class="sort-icon">▼</span></th>
+          <th data-sort="cost">Cost <span class="sort-icon">▼</span></th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -179,9 +179,17 @@
     <table id="models-table">
       <thead>
         <tr>
-          <th>Model</th><th>Messages</th><th>Total Tokens</th>
-          <th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Write</th>
-          <th>Reasoning</th><th>Tokens/s</th><th>Cost</th><th>Share</th>
+          <th data-sort="name">Model <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="messages">Messages <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="tokens">Total Tokens <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="input_tokens">Input <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="output_tokens">Output <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="cache_read_tokens">Cache Read <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="cache_write_tokens">Cache Write <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="reasoning_tokens">Reasoning <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="avg_tps">Tokens/s <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="cost">Cost <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="pct">Share <span class="sort-icon">▼</span></th>
         </tr>
       </thead>
       <tbody id="models-tbody"></tbody>
@@ -192,7 +200,14 @@
     <div class="section-header"><span>Tool Usage</span></div>
     <table id="tools-table">
       <thead>
-        <tr><th>Tool</th><th>Calls</th><th>Total Time</th><th>Avg Time</th><th>Errors</th><th>Associated Cost</th></tr>
+        <tr>
+          <th data-sort="name">Tool <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="calls">Calls <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="time">Total Time <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="avg_seconds">Avg Time <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="errors">Errors <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="cost">Associated Cost <span class="sort-icon">▼</span></th>
+        </tr>
       </thead>
       <tbody id="tools-tbody"></tbody>
     </table>
@@ -202,9 +217,17 @@
     <div class="section-header"><span>Projects</span></div>
     <table id="projects-table">
       <thead>
-        <tr><th>Project</th><th>Sessions</th><th>Messages</th><th>Tokens</th>
-          <th>LLM Time</th><th>Tool Time</th><th>Tokens/s</th>
-          <th>Cost</th><th>Last Activity</th></tr>
+        <tr>
+          <th data-sort="name">Project <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="sessions">Sessions <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="messages">Messages <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="tokens">Tokens <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="llm_time">LLM Time <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="tool_time">Tool Time <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="avg_tps">Tokens/s <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="cost">Cost <span class="sort-icon">▼</span></th>
+          <th data-sort="last_activity">Last Activity <span class="sort-icon">▼</span></th>
+        </tr>
       </thead>
       <tbody id="projects-tbody"></tbody>
     </table>

@@ -163,13 +163,24 @@ th {
     font-size: 12px;
     text-transform: uppercase;
     color: var(--text-secondary);
-    cursor: pointer;
     user-select: none;
     white-space: nowrap;
 }
 
-th:hover {
+/* Only a column that can be sorted looks clickable. */
+th[data-sort] {
+    cursor: pointer;
+}
+
+th[data-sort]:hover {
     color: var(--text-primary);
+}
+
+/* Sortable headings are focusable and operable from the keyboard, so the
+   focus ring has to be visible against the header background. */
+th[data-sort]:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: -2px;
 }
 
 th .sort-icon {
