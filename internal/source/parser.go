@@ -112,7 +112,48 @@ func (b *sessionBuilder) observeTime(tsISO string) {
 // arithmetic identical across six parsers written against six different log
 // formats: reasoning is carved out of output rather than added to it, totals are
 // computed from the parts, and negatives are impossible by construction.
+//
+// A record whose token counts are all zero contributes no call at all. Every
+// agent writes such a record for a turn that never reached the model — Claude's
+// interrupted-message `<synthetic>` turn is the committed example — and storing it
+// produced a row with Priced=true and CostUSD=0, which is precisely the
+// confident zero the pricing safety net exists to prevent, while also inflating
+// the call and message counts the dashboard reports. An empty usage block was
+// already dropped for Antigravity; the rule now applies to all six parsers,
+// because it is a property of the call rather than of any one log format.
+//
+// The rule is deliberately about *tokens*, not about price: a call that carries
+// tokens and whose model resolves to no rate is still stored, still counts its
+// tokens, and is still marked unpriced. That is the designed safety net and this
+// check leaves it intact.
 func (b *sessionBuilder) addCall(c model.Call) {
+	if allZeroTokens(c) {
+		return
+	}
+	b.appendCall(c)
+}
+
+// addUnknownCall stores a call whose usage could not be determined, as distinct
+// from one whose usage was reported as zero.
+//
+// The difference matters: a record that says a call used no tokens is not a call
+// and is dropped, whereas a call that demonstrably happened but whose size the
+// log does not reveal — a Codex counter reset, where the running total falls and
+// the increment across the reset is unrecoverable — is kept so the call count
+// stays right, and marked unpriced so its cost reads as unknown rather than as a
+// confident zero. Pricing it would be the one thing that is definitely wrong.
+func (b *sessionBuilder) addUnknownCall(c model.Call) {
+	c.Priced = false
+	c.CostUSD = 0
+	b.appendCall(c)
+}
+
+func allZeroTokens(c model.Call) bool {
+	return c.InputTokens == 0 && c.OutputTokens == 0 && c.ReasoningTokens == 0 &&
+		c.CacheReadTokens == 0 && c.CacheWriteTokens == 0
+}
+
+func (b *sessionBuilder) appendCall(c model.Call) {
 	if c.TotalTokens == 0 {
 		c.TotalTokens = c.InputTokens + c.OutputTokens + c.CacheReadTokens + c.CacheWriteTokens
 	}

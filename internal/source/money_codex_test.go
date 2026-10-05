@@ -245,3 +245,47 @@ func TestCodexExplicitZeroDeltasAreResumedToo(t *testing.T) {
 			c.InputTokens, c.CacheReadTokens, c.OutputTokens, c.ReasoningTokens)
 	}
 }
+
+// TestCodexCounterResetIsAnUnpricedCallNotAConfidentZero separates the two kinds
+// of "no tokens", which look identical in the token columns.
+//
+// A token_count event whose reported per-call usage is all zero is a turn that
+// consumed nothing and is not a call. An event whose running total went *backwards*
+// is a call that demonstrably happened and whose size the log cannot reveal: the
+// increment across the reset is unrecoverable. Dropping it loses a call from the
+// count; pricing it at $0.00 reports the unknown as a fact. It is stored, unpriced.
+func TestCodexCounterResetIsAnUnpricedCallNotAConfidentZero(t *testing.T) {
+	path := copyFixtureTo(t, "codex/rollout-counter-reset.jsonl")
+	sw, _, err := NewCodexParser().Parse(path, model.ScanState{}, testPricer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkInvariants(t, sw)
+
+	var reset *model.Call
+	for i := range sw.Calls {
+		if sw.Calls[i].TotalTokens == 0 {
+			reset = &sw.Calls[i]
+		}
+	}
+	if reset == nil {
+		t.Fatal("the reset event was dropped: a call that happened must stay in the count")
+	}
+	if reset.Priced {
+		t.Error("the reset event is marked priced: its cost is unknown, not zero")
+	}
+	if reset.CostUSD != 0 {
+		t.Errorf("cost = $%v, want 0", reset.CostUSD)
+	}
+	// The rest of the session is priced normally, so the unpriced marker is not
+	// a blanket loss of the rate table.
+	var priced int
+	for _, c := range sw.Calls {
+		if c.Priced {
+			priced++
+		}
+	}
+	if priced != len(sw.Calls)-1 {
+		t.Errorf("%d of %d calls are priced; only the reset should be unpriced", priced, len(sw.Calls))
+	}
+}

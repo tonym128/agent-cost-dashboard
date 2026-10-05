@@ -661,12 +661,18 @@ func consumeCodex(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	// contributes nothing: reporting the new total in full would double count
 	// everything before the reset, and reporting a negative figure would be
 	// worse than reporting none.
+	// reset records that the running total went backwards. The increment across
+	// such an event is not knowable from this log at all, which is a different
+	// thing from a call that used nothing: the call happened, so it is kept and
+	// stored unpriced rather than dropped or billed at zero.
+	reset := false
 	delta := func(key string) int64 {
 		if _, present := last[key]; present {
 			return num(last, key)
 		}
 		d := num(total, key) - num(prevTotals, key)
 		if d < 0 {
+			reset = true
 			return 0
 		}
 		return d
@@ -711,8 +717,15 @@ func consumeCodex(b *sessionBuilder, rec record, ctx *parseCtx) error {
 		CacheReadTokens: int(cacheRead),
 		ReasoningTokens: int(reasoning),
 	}
-	price(ctx.pricer, &c)
-	b.addCall(c)
+	if reset {
+		// Not priced, and not dropped: this was a real call whose size the log
+		// cannot say. Marking it priced at $0.00 would report the unknown as a
+		// confident zero.
+		b.addUnknownCall(c)
+	} else {
+		price(ctx.pricer, &c)
+		b.addCall(c)
+	}
 	b.observeTime(tsStr(ts))
 	return nil
 }
