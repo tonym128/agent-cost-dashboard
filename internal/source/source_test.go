@@ -1,8 +1,11 @@
 package source
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/tonym128/agent-cost-dashboard/internal/model"
@@ -100,27 +103,113 @@ func TestPricerCachesResolution(t *testing.T) {
 	}
 }
 
-func TestFallbackTableEntriesAreReachable(t *testing.T) {
-	// A fallback pattern the live catalogue always wins for is a dead edit:
-	// changing it changes nothing. The count is asserted rather than the exact
-	// set, because the catalogue changes when pricing is refreshed.
+// liveModelIDs returns every model id in the committed price dump, which is the
+// set of models the dashboard will ever be asked about.
+func liveModelIDs(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile("../../models.json")
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	var doc openRouterDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse models.json: %v", err)
+	}
+	ids := make([]string, 0, len(doc.Data))
+	for _, m := range doc.Data {
+		if m.ID != "" {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		t.Fatal("models.json lists no models")
+	}
+	return ids
+}
+
+// TestFallbackTableNeverReportsAConfidentZero is the property the embedded table
+// actually exists to provide.
+//
+// It used to be tested as "most fallback patterns must not be shadowed by the
+// live catalogue", which measured reachability in a world where models.json
+// always loads — precisely the world the table does not exist for. Shadowing is
+// the healthy state: it means the dump and the fallback agree. Those entries are
+// the entire reason a `go install`ed binary can still price a Claude session.
+//
+// So the question asked here is what happens when the dump is *absent*: every
+// model in the catalogue must either get a real rate or be explicitly reported
+// unpriced. The one failure worth catching is a call that claims to be priced
+// while costing nothing, because that is a confident wrong number and it defeats
+// the unpriced safety net entirely.
+func TestFallbackTableNeverReportsAConfidentZero(t *testing.T) {
+	fallback, err := NewFallbackPricer()
+	if err != nil {
+		t.Fatalf("NewFallbackPricer: %v", err)
+	}
+	// The dump itself, only to tell a genuinely free model from a mis-priced one.
+	live := testPricer(t)
+	ids := liveModelIDs(t)
+
+	covered, unpriced := 0, 0
+	var silentZero []string
+	for _, id := range ids {
+		cost, priced := fallback.Cost(id, 1_000_000, 1_000_000, 0, 0)
+		if !priced {
+			unpriced++
+			continue
+		}
+		covered++
+		if cost > 0 {
+			continue
+		}
+		// Zero is only honest when the dump agrees the model is free; otherwise
+		// the fallback resolved it to nothing and would report $0.00 as priced.
+		if rates, ok := live.Resolve(id); ok && rates.Input+rates.Output > 0 {
+			silentZero = append(silentZero, id)
+		}
+	}
+
+	t.Logf("with no price dump, the embedded fallback prices %d of %d models "+
+		"and reports %d as unpriced (never as $0.00)", covered, len(ids), unpriced)
+	if len(silentZero) > 0 {
+		sort.Strings(silentZero)
+		t.Errorf("%d of %d models resolve to a confident $0.00 with no price dump: %s",
+			len(silentZero), len(ids), strings.Join(silentZero, ", "))
+	}
+	if covered == 0 {
+		t.Fatal("the embedded fallback table prices nothing at all")
+	}
+	// The models that matter most, by spend, must survive losing the dump. These
+	// were the entries the old test wanted to delete.
+	for _, id := range []string{"claude-opus-4-1", "claude-opus-4-8", "gemini-2.5-pro"} {
+		if _, ok := fallback.Resolve(id); !ok {
+			t.Errorf("%s is unpriced without the dump", id)
+		}
+	}
+}
+
+// TestFallbackShadowingIsInformationalOnly reports, without asserting on it, how
+// much of the fallback table the live catalogue would shadow.
+//
+// This is a diagnostic for whoever refreshes prices, not a health check. A high
+// count means the two sources agree; a low count means the dump has drifted and
+// the table is doing real work. Neither is a reason to delete a row: every
+// shadowed entry is the price that model gets when models.json is missing.
+func TestFallbackShadowingIsInformationalOnly(t *testing.T) {
 	p := testPricer(t)
 	reach := p.FallbackReachability()
 	if len(reach) == 0 {
 		t.Fatal("fallback table is empty")
 	}
-	dead := 0
-	for pattern, ok := range reach {
-		if !ok {
-			dead++
-			t.Logf("shadowed by live catalogue: %s", pattern)
+	shadowed := 0
+	for _, reachable := range reach {
+		if !reachable {
+			shadowed++
 		}
 	}
-	// A majority being dead edits would mean the fallback table is mostly
-	// documentation.
-	if dead > len(reach)/2 {
-		t.Errorf("%d of %d fallback entries are unreachable", dead, len(reach))
-	}
+	t.Logf("informational: %d of %d fallback patterns are shadowed by the live "+
+		"catalogue — those rows are the no-dump safety net, not dead entries",
+		shadowed, len(reach))
 }
 
 // ---------------------------------------------------------------- protobuf

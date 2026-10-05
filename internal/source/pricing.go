@@ -82,6 +82,18 @@ func NewPricer(modelsPath, manualPath string) (*Pricer, error) {
 	return p, nil
 }
 
+// NewFallbackPricer builds a pricer from the embedded table alone, with no live
+// catalogue.
+//
+// This is the configuration that exists precisely because models.json can go
+// missing — a `go install`ed binary has no dump beside it. It is also the
+// configuration the tests need in order to ask the only question about the
+// fallback table that matters: with the dump absent, does every model still get
+// a real number, or an explicit "unpriced"?
+func NewFallbackPricer() (*Pricer, error) {
+	return NewPricer("", "")
+}
+
 type openRouterDoc struct {
 	Data []struct {
 		ID      string `json:"id"`
@@ -214,16 +226,40 @@ func (p *Pricer) Cost(model string, input, output, cacheRead, cacheWrite int) (f
 }
 
 // FallbackReachability reports, for each pattern in the embedded table, whether
-// it is reachable. A pattern the live catalogue always wins for is dead weight:
-// editing it changes nothing, which is how the two tables drifted apart before
-// a test caught it.
+// the live catalogue would shadow it.
+//
+// A shadowed pattern is *not* dead weight. It is the only thing that prices
+// that model when models.json is absent, so shadowing is the normal, expected
+// state for most of the table — it means the two sources agree, not that the
+// entry is redundant. This is diagnostic output, not a health metric, and
+// nothing should assert on how many patterns are shadowed.
 func (p *Pricer) FallbackReachability() map[string]bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	out := make(map[string]bool, len(p.manual))
 	for pattern := range p.manual {
 		_, viaLive := p.openRouter[NormalizeModel(pattern)]
 		out[pattern] = !viaLive
 	}
 	return out
+}
+
+// LiveCatalogueSize reports how many models the OpenRouter dump contributed.
+//
+// Zero means the dump was absent or empty and every price is coming from the
+// embedded fallback table, which is a materially less accurate source — the
+// caller uses this to warn rather than to refuse, because the fallback is a
+// deliberate feature and running with it beats not running.
+func (p *Pricer) LiveCatalogueSize() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.openRouter)
+}
+
+// FallbackOnly reports whether the pricer is running on the embedded table with
+// no live catalogue behind it.
+func (p *Pricer) FallbackOnly() bool {
+	return p.LiveCatalogueSize() == 0
 }
 
 // LiveModelKeys returns every model name known to either source, which is what
