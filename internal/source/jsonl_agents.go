@@ -1,7 +1,9 @@
 package source
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +26,11 @@ type jsonlParser struct {
 	uidFrom func(recs []record) string
 	// projectFrom likewise supplies the working directory from the log body.
 	projectFrom func(path string) string
+	// resumeBaseline supplies the cumulative figure a parser differences against
+	// when an incremental read starts mid-file, read from the log rather than
+	// carried in the cursor. Only a parser whose records are running totals needs
+	// one; see codexPriorTotals.
+	resumeBaseline func(path string, from int64) map[string]any
 }
 
 // parseCtx carries what a consume hook needs beyond the record itself.
@@ -96,6 +103,14 @@ func (p *jsonlParser) Parse(path string, prev model.ScanState, pricer *Pricer) (
 		b.ordinal = recs[0].Ordinal
 	}
 	ctx := &parseCtx{pricer: pricer, pendingToolCalls: map[string]pendingTool{}}
+
+	// A parser whose records are cumulative needs the total as it stood at the
+	// cursor, which a resumed read starts after. It is recovered from the log
+	// itself rather than from the cursor, because the cursor's fields all have
+	// another meaning already.
+	if from > 0 && p.resumeBaseline != nil {
+		b.prevTotalsHook = func() map[string]any { return p.resumeBaseline(path, from) }
+	}
 
 	for _, rec := range recs {
 		if rec.Data == nil {
@@ -496,7 +511,98 @@ func NewCodexParser() Parser {
 			return projectFromSessionRecord(path)
 		},
 		consume: consumeCodex,
+		resumeBaseline: func(path string, from int64) map[string]any {
+			return lastCodexTotals(path, from)
+		},
 	}
+}
+
+// lastCodexTotals returns the cumulative usage total in force at byte offset
+// `from` — the last total_token_usage written before it.
+//
+// Codex reports usage as a session running total, so an increment is only
+// meaningful against its predecessor. On a resumed read that predecessor was
+// recorded before the cursor and is not in memory: the total lives in the
+// builder, which is constructed fresh per Parse and carries nothing across
+// scans. Without recovering it here, the first token_count of every incremental
+// read sees an empty baseline and, absent an explicit last_token_usage, is
+// discarded as if it were a baseline — but it is not one. Its predecessor was
+// billed on the previous pass, so the increment is dropped and a rollout, which
+// grows continuously and is polled every 30s, loses one call's usage per scan.
+//
+// Reading backwards is bounded by the last complete line before the offset; a
+// rollout's token_count events are small and frequent, so this is a short read
+// rather than a re-scan of the file.
+func lastCodexTotals(path string, from int64) map[string]any {
+	if from <= 0 {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	// The total must come from a line that ended at or before `from`, so the
+	// search never crosses the cursor: a token_count written after it has not
+	// been billed yet and is not the baseline for the record being read.
+	nl := []byte("\n")
+	const chunk = 64 << 10
+	end := from
+	buf := make([]byte, 0, chunk)
+	for end > 0 {
+		start := end - chunk
+		if start < 0 {
+			start = 0
+		}
+		blk := make([]byte, end-start)
+		if _, err := f.ReadAt(blk, start); err != nil && err != io.EOF {
+			return nil
+		}
+		buf = append(blk, buf...)
+		// Only whole lines are candidates: a partial first line is a fragment of
+		// something longer, and reading a truncated JSON object would yield
+		// whatever fields happened to parse.
+		lines := bytes.Split(buf, nl)
+		if start > 0 {
+			lines = lines[1:]
+		}
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := lines[i]
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			rec := decodeObject(string(line))
+			if rec == nil {
+				continue
+			}
+			if totals := codexTotalsOf(rec); totals != nil {
+				return totals
+			}
+		}
+		if start == 0 {
+			return nil
+		}
+		end = start
+	}
+	return nil
+}
+
+// codexTotalsOf pulls the cumulative usage total out of one rollout record, or
+// nil when the record is not a token_count event carrying one.
+func codexTotalsOf(rec map[string]any) map[string]any {
+	if str(rec, "type") != "event_msg" {
+		return nil
+	}
+	payload := asMap(rec["payload"])
+	if str(payload, "type") != "token_count" {
+		return nil
+	}
+	total := asMap(asMap(payload["info"])["total_token_usage"])
+	if len(total) == 0 {
+		return nil
+	}
+	return total
 }
 
 func consumeCodex(b *sessionBuilder, rec record, ctx *parseCtx) error {
@@ -533,10 +639,18 @@ func consumeCodex(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	// running total is replaced below. Reading b.prevTotals from inside the
 	// closure instead would read the total already stored there and difference
 	// it against itself, so every increment came out as zero.
-	prevTotals := b.prevTotals
+	prevTotals := b.baselineTotals()
 
 	// Prefer the explicit per-call block; otherwise difference the running
 	// total against the previous one.
+	//
+	// Presence, not value, decides which: Codex writes `cached_input_tokens: 0`
+	// and `reasoning_output_tokens: 0` explicitly for a call that hit neither,
+	// so testing the value fell through to the cumulative figure and billed a
+	// whole session's cache reads to a single call. On the reviewer's shape
+	// (total 40200/38000, last 200/0) that produced CacheReadTokens=38000,
+	// InputTokens=0 and ReasoningTokens=60 — 38,000 cache tokens on a call that
+	// read no cache, with the real 200 input tokens clamped away.
 	//
 	// A decrease means the counter was reset rather than that a call was
 	// refunded. The increment is unknown, not negative, so this event
