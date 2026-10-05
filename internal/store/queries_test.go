@@ -270,3 +270,117 @@ func TestWhereExtraEmptyFilterProducesNoClause(t *testing.T) {
 		})
 	}
 }
+
+// TestHistoryRangeReportsTheSpanTheCallsActuallyCover is the regression test for
+// a transposition nobody would make on purpose.
+//
+// HistoryRange returned MIN(NULLIF(ts,0)) and MAX(ts) side by side, and swapping
+// the two `time.Unix` assignments that receive them is invisible to every other
+// test: the web layer anchors the activity chart on `newest`, so a swap inverts
+// every activity window the page shows. The existing coverage seeded a single
+// call, where oldest == newest and the swap is a no-op.
+//
+// Two calls months apart are seeded here, and both the extent and the window
+// bounds derived from it are asserted — the latter because that is what the swap
+// actually corrupts, and it is the observable consequence.
+func TestHistoryRangeReportsTheSpanTheCallsActuallyCover(t *testing.T) {
+	st, err := Open(t.TempDir() + "/range.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	// Month precision on purpose: a month is far enough apart that transposing
+	// the two bounds cannot produce a plausible-looking window, and it is a span
+	// the documented activity ranges have to narrow rather than clamp.
+	oldest := time.Now().Add(-200 * 24 * time.Hour).Truncate(time.Hour)
+	newest := oldest.Add(90 * 24 * time.Hour)
+	for _, spec := range []struct {
+		uid string
+		at  time.Time
+	}{
+		{"ancient", oldest},
+		{"recent", newest},
+	} {
+		sess := model.SessionWrite{
+			Session: model.Session{UID: spec.uid, Agent: "pi", Project: "/p"},
+			Calls: []model.Call{{
+				SessionUID: spec.uid, CallKey: "c", Agent: "pi", Project: "/p",
+				Model: "m", Time: spec.at, TotalTokens: 10, CostUSD: 1, Priced: true,
+			}},
+		}
+		if err := st.ReplaceSession(sess); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.RecomputeSession(spec.uid); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gotOldest, gotNewest, err := st.HistoryRange(ctx, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotOldest.Equal(oldest) {
+		t.Errorf("oldest = %s, want %s: MIN over the stored calls", gotOldest.UTC(), oldest.UTC())
+	}
+	if !gotNewest.Equal(newest) {
+		t.Errorf("newest = %s, want %s: MAX over the stored calls", gotNewest.UTC(), newest.UTC())
+	}
+	// A transposed pair is still "a range", so the ordering itself is the
+	// cheapest possible guard and the one a reader of the API would expect.
+	if !gotOldest.Before(gotNewest) {
+		t.Errorf("oldest %s is not before newest %s", gotOldest.UTC(), gotNewest.UTC())
+	}
+
+	// The consequence: the activity window runs from the older bound and ends at
+	// the newer one. With the bounds transposed, this window covers the wrong
+	// three months entirely and returns the other call.
+	buckets, err := st.Activity(ctx, Filter{}, gotOldest, gotNewest, 86400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	for _, b := range buckets {
+		calls += b.Calls
+	}
+	if calls != 2 {
+		t.Errorf("a window from the reported oldest to the reported newest covered "+
+			"%d calls, want both: the chart anchors on newest, so a transposed pair "+
+			"inverts every window it draws", calls)
+	}
+
+	// A filter narrows the extent by the same clause every other query uses, so a
+	// filtered view's chart cannot reach outside the calls that view selected.
+	// Here the filter drops the newer call, which must pull `newest` back to it.
+	byAgent, filteredNewest, err := st.HistoryRange(ctx, Filter{Agents: []string{"pi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !byAgent.Equal(oldest) || !filteredNewest.Equal(newest) {
+		t.Errorf("a filter matching both agents reported %s..%s, want the full extent "+
+			"%s..%s", byAgent.UTC(), filteredNewest.UTC(), oldest.UTC(), newest.UTC())
+	}
+	none, _, err := st.HistoryRange(ctx, Filter{Agents: []string{"claude"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !none.IsZero() {
+		t.Errorf("a filter matching nothing reported oldest %s, want a zero time", none.UTC())
+	}
+
+	// An empty database reports nothing rather than the epoch.
+	st2, err := Open(t.TempDir() + "/empty.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	eo, en, err := st2.HistoryRange(ctx, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eo.IsZero() || !en.IsZero() {
+		t.Errorf("an empty database reported %s..%s, want two zero times", eo, en)
+	}
+}
