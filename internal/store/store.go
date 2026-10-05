@@ -17,6 +17,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,18 @@ import (
 	"github.com/tonym128/agent-cost-dashboard/internal/model"
 	_ "modernc.org/sqlite"
 )
+
+// Warn reports a condition the caller should know about but that must not stop
+// the dashboard from starting.
+//
+// It exists because the alternative to reporting a failed permission change is
+// either failing to open a database on a filesystem that does not support
+// permission bits, or silently running with a database any local account can
+// read. Both are worse than a line on stderr. It is a variable so a caller — the
+// CLI, which already has a slog logger — can route it wherever it likes.
+var Warn = func(msg string, args ...any) {
+	slog.Default().Warn(msg, args...)
+}
 
 // Store is a handle on the database.
 type Store struct {
@@ -39,6 +52,15 @@ type Store struct {
 // persistent in the file, but busy_timeout and foreign_keys are not.
 func Open(path string) (*Store, error) {
 	dsn := path
+	// Whether this call is the one that creates the file, decided before it is
+	// opened: afterwards there is no way to tell a fresh database from one the
+	// user has been running for months.
+	created := false
+	if path != ":memory:" {
+		if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+			created = true
+		}
+	}
 	if path == ":memory:" {
 		// A shared cache keeps an in-memory database alive across the pool's
 		// connections, which the default of one private database would not.
@@ -47,8 +69,14 @@ func Open(path string) (*Store, error) {
 		// SQLite will not create intermediate directories, so the first run
 		// against the default path under ~/.local/share would fail with an
 		// opaque "unable to open database file".
+		//
+		// 0700, not 0755: the database holds every project path, session title,
+		// model name and cost figure, and on a multi-user host a traversable
+		// parent directory is enough for any local account to reach the file
+		// inside it. MkdirAll applies the mode only to directories it creates, so
+		// an existing directory keeps whatever the user chose for it.
 		if dir := filepath.Dir(path); dir != "" && dir != "." {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
 				return nil, fmt.Errorf("create %s: %w", dir, err)
 			}
 		}
@@ -71,7 +99,45 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if created {
+		// Only for a database this call created. An existing one belongs to the
+		// user, who may have set its mode deliberately — a shared group-readable
+		// database on a machine they control is their call to make, not one to
+		// override silently on every start.
+		restrictToOwner(path)
+	}
 	return s, nil
+}
+
+// restrictToOwner tightens a database this process just created, and the WAL and
+// shared-memory files SQLite writes beside it, to 0600.
+//
+// SQLite creates them 0644 under the process umask, so on the common 022 umask
+// every local account on the host can read the database directly — which
+// bypasses the HTTP auth entirely, since the auth token guards the web endpoint
+// and not a file on disk holding every project path and cost figure in the
+// database.
+//
+// A chmod that fails is reported and startup continues. The usual cause is a
+// mount whose filesystem does not support permission bits — a FAT volume, a
+// network share, a container bind mount with a fixed mode — and refusing to
+// start a cost dashboard because of it would trade a visible warning for an
+// invisible outage.
+func restrictToOwner(path string) {
+	// The -wal and -shm files appear when the first write transaction runs, which
+	// is the migration above, so they exist by now. They are listed rather than
+	// assumed so that a database left in delete-journal mode is not reported as
+	// a failure over a file that was never created.
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if err := os.Chmod(p, 0o600); err != nil {
+			Warn("could not restrict database file to its owner; "+
+				"other local accounts may be able to read it",
+				"path", p, "error", err)
+		}
+	}
 }
 
 // DB exposes the handle for callers that need a transaction.
