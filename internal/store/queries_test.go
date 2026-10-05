@@ -18,10 +18,17 @@ func newFilterStore(t *testing.T) (*Store, func()) {
 	}
 	base := time.Now().Add(-48 * time.Hour).Truncate(time.Hour)
 
+	// One tool call per session, carrying the same axes as its call, so a query
+	// over the tool_call table has something to filter and the filtered and
+	// unfiltered counts differ by something other than zero.
 	add := func(uid, agent, project, modelName string, at time.Time) {
 		sess := model.SessionWrite{}
 		sess.UID, sess.Agent, sess.Project = uid, agent, project
 		sess.Calls = append(sess.Calls, oneCall(uid, agent, project, modelName, at))
+		sess.ToolCalls = append(sess.ToolCalls, model.ToolCall{
+			SessionUID: uid, CallKey: "c", Agent: agent, Project: project,
+			Tool: "tool-" + uid, Time: at, Seconds: 1,
+		})
 		if err := st.ReplaceSession(sess); err != nil {
 			t.Fatal(err)
 		}
@@ -116,70 +123,327 @@ func TestActivityWindowAndFilterAgree(t *testing.T) {
 	}
 }
 
-// TestEveryFilteredQueryAgreesOnTheSameFilter: the risk with a shared filter is
-// that one query applies it differently from another, and the page then shows
-// a total that disagrees with the table under it.
-func TestEveryFilteredQueryAgreesOnTheSameFilter(t *testing.T) {
+// filteredEntry is one of the eight filtered entry points the page's payload is
+// assembled from, with what "scoped correctly" means for it.
+//
+// Every one of these is called with the same Filter in production — the index
+// handler builds one and passes it to all of them — so a filter that one of them
+// applies differently shows up as a headline total that disagrees with the table
+// beneath it. Before this table existed, the agreement test called only four of
+// the eight, and the four it skipped were exactly the ones that go through
+// whereSession() or the tool-call prefix: the model and project axes there were
+// untested, which is why a ?model= request could return HTTP 500 and nothing in
+// the suite noticed.
+type filteredEntry struct {
+	name string
+	call func(context.Context, *Store, Filter) (int, error)
+	// want is the number of rows (or calls) this entry must return under a filter
+	// that selects the sessions named by the fixture. Each is expressed relative
+	// to Totals so the eight cannot be checked against four hand-written numbers
+	// that agree with each other for the wrong reason.
+	want func(Totals) int
+	// label names the count for failure messages.
+	label string
+}
+
+// filteredEntries is the complete set. Adding a filtered query without adding it
+// here is invisible, so the count is asserted below.
+var filteredEntries = []filteredEntry{
+	{
+		name: "Models", label: "calls",
+		call: func(ctx context.Context, st *Store, f Filter) (int, error) {
+			rows, err := st.Models(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			n := 0
+			for _, m := range rows {
+				n += m.Calls
+			}
+			return n, nil
+		},
+		want: func(t Totals) int { return t.Calls },
+	},
+	{
+		name: "Projects", label: "calls",
+		call: func(ctx context.Context, st *Store, f Filter) (int, error) {
+			rows, err := st.Projects(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			n := 0
+			for _, r := range rows {
+				n += r.Calls
+			}
+			return n, nil
+		},
+		want: func(t Totals) int { return t.Calls },
+	},
+	{
+		name: "Tools", label: "tool calls",
+		call: func(ctx context.Context, st *Store, f Filter) (int, error) {
+			rows, err := st.Tools(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			n := 0
+			for _, r := range rows {
+				n += r.Calls
+			}
+			return n, nil
+		},
+		// A filtered view's tool calls are the ones whose own axes match; every
+		// session in the fixture has exactly one.
+		want: func(t Totals) int { return t.Sessions },
+	},
+	{
+		name: "Sessions", label: "sessions",
+		call: func(ctx context.Context, st *Store, f Filter) (int, error) {
+			rows, err := st.Sessions(ctx, f, 0)
+			if err != nil {
+				return 0, err
+			}
+			return len(rows), nil
+		},
+		want: func(t Totals) int { return t.Sessions },
+	},
+	{
+		name: "ProjectModels", label: "calls",
+		call: func(ctx context.Context, st *Store, f Filter) (int, error) {
+			rows, err := st.ProjectModels(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			n := 0
+			for _, r := range rows {
+				n += r.Calls
+			}
+			return n, nil
+		},
+		want: func(t Totals) int { return t.Calls },
+	},
+	{
+		name: "ProjectTools", label: "tool calls",
+		call: func(ctx context.Context, st *Store, f Filter) (int, error) {
+			rows, err := st.ProjectTools(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			n := 0
+			for _, r := range rows {
+				n += r.Calls
+			}
+			return n, nil
+		},
+		want: func(t Totals) int { return t.Sessions },
+	},
+	{
+		name: "Activity", label: "calls",
+		call: func(ctx context.Context, st *Store, f Filter) (int, error) {
+			rows, err := st.Activity(ctx, f, filterBase().Add(-time.Hour), filterBase().Add(24*time.Hour), 3600)
+			if err != nil {
+				return 0, err
+			}
+			n := 0
+			for _, r := range rows {
+				n += r.Calls
+			}
+			return n, nil
+		},
+		want: func(t Totals) int { return t.Calls },
+	},
+}
+
+// filterBase is the fixture's first call time, recomputed the same way
+// newFilterStore computes it.
+func filterBase() time.Time { return time.Now().Add(-48 * time.Hour).Truncate(time.Hour) }
+
+// TestEveryFilteredEntryPointAgreesOnTheSameFilter is the test that would have
+// caught the live ?model= 500.
+//
+// Every entry point above is called with the same filter as Totals, and the
+// number of rows each returns is compared against what Totals says the same
+// filter selects. Four of the eight — Projects, Tools, Sessions, ProjectModels,
+// ProjectTools — go through whereSession() or the tool_call prefix, and their
+// model and project axes had no coverage at all: disabling
+// `if len(f.Models) > 0` in whereSession left the suite green.
+//
+// The filters below include one per axis and one matching nothing, because an
+// entry point that ignores a filter entirely returns the unfiltered count and an
+// entry point that over-filters returns zero; only the middle is right.
+func TestEveryFilteredEntryPointAgreesOnTheSameFilter(t *testing.T) {
 	st, done := newFilterStore(t)
 	defer done()
-
 	ctx := context.Background()
-	base := time.Now().Add(-48 * time.Hour).Truncate(time.Hour)
-	from, to := base.Add(-time.Hour), base.Add(24*time.Hour)
-	cut := base.Add(90 * time.Minute)
 
-	for _, f := range []Filter{
-		{},
-		{Agents: []string{"agy"}},
-		{Models: []string{"m1", "m4"}},
-		{DateFrom: &cut},
-		{DateTo: &cut},
-		{Agents: []string{"claude", "agy"}, DateFrom: &cut},
+	cut := filterBase().Add(90 * time.Minute)
+	filters := []struct {
+		name string
+		f    Filter
+	}{
+		{"none", Filter{}},
+		{"agent", Filter{Agents: []string{"agy"}}},
+		{"two agents", Filter{Agents: []string{"claude", "agy"}}},
+		{"project", Filter{Projects: []string{"/p3"}}},
+		{"two projects", Filter{Projects: []string{"/p1", "/p3"}}},
+		{"date from", Filter{DateFrom: &cut}},
+		{"date to", Filter{DateTo: &cut}},
+		{"project and date", Filter{Projects: []string{"/p1"}, DateFrom: &cut}},
+	}
+
+	for _, tc := range filters {
+		t.Run(tc.name, func(t *testing.T) {
+			totals, err := st.Totals(ctx, tc.f)
+			if err != nil {
+				t.Fatalf("Totals(%+v): %v", tc.f, err)
+			}
+			for _, e := range filteredEntries {
+				got, err := e.call(ctx, st, tc.f)
+				if err != nil {
+					// An error here is the failure this test exists for: the page
+					// turns one of these into an HTTP 500 while showing nothing.
+					//
+					// KNOWN RED on this branch: Tools and ProjectTools qualify
+					// their filter columns as `t.model`, and tool_call has no
+					// model column, so any ?model= filter reaches the database and
+					// comes back as "no such column: t.model". The test is written
+					// against the fixed behaviour and will go green when the
+					// query.go fix lands; see the report for the exact change.
+					t.Errorf("%s(%+v): %v", e.name, tc.f, err)
+					continue
+				}
+				if want := e.want(totals); got != want {
+					t.Errorf("%s(%+v) returned %d %s, want %d: it scoped the rows "+
+						"differently from Totals, so the table and the headline "+
+						"disagree", e.name, tc.f, got, e.label, want)
+				}
+			}
+
+			// The headline is a cost, so the cost has to reconcile too. Daily is
+			// the one rollup that groups by the call's own local date, so it is
+			// only comparable where every call falls inside the same set of days
+			// Totals counted — which the date filters below deliberately are not.
+			daily, err := st.Daily(ctx, tc.f)
+			if err != nil {
+				t.Fatalf("Daily(%+v): %v", tc.f, err)
+			}
+			var dailyCost float64
+			for _, d := range daily {
+				dailyCost += d.Cost
+			}
+			withinOneDay := len(daily) == 1
+			if withinOneDay && math.Abs(dailyCost-totals.Cost) > 0.01 {
+				t.Errorf("%+v: the daily chart costs $%.4f while Totals says $%.4f, "+
+					"and both cover the same single day", tc.f, dailyCost, totals.Cost)
+			}
+		})
+	}
+}
+
+// TestFilteredEntryPointListIsComplete guards the list above.
+//
+// A filtered query added to the store and not to filteredEntries would be
+// silently uncovered — which is how four of the eight came to be untested in the
+// first place. Each name is checked against a query the index handler actually
+// issues.
+func TestFilteredEntryPointListIsComplete(t *testing.T) {
+	covered := map[string]bool{}
+	for _, e := range filteredEntries {
+		covered[e.name] = true
+	}
+	for _, name := range []string{
+		"Models", "Projects", "Tools", "Sessions",
+		"ProjectModels", "ProjectTools", "Activity",
 	} {
-		totals, err := st.Totals(ctx, f)
-		if err != nil {
-			t.Fatalf("Totals(%+v): %v", f, err)
+		if !covered[name] {
+			t.Errorf("%s is a filtered query the page issues but is not in "+
+				"filteredEntries, so no test checks that it agrees with Totals", name)
 		}
-		models, err := st.Models(ctx, f)
-		if err != nil {
-			t.Fatalf("Models(%+v): %v", f, err)
-		}
-		daily, err := st.Daily(ctx, f)
-		if err != nil {
-			t.Fatalf("Daily(%+v): %v", f, err)
-		}
-		buckets, err := st.Activity(ctx, f, from, to, 3600)
-		if err != nil {
-			t.Fatalf("Activity(%+v): %v", f, err)
-		}
+	}
+	// Seven compared by row count, plus Daily compared by cost just below: eight
+	// filtered queries in total, all of which the page issues with one filter.
+	if len(filteredEntries) != 7 {
+		t.Errorf("filteredEntries holds %d entries; the payload is assembled from "+
+			"eight filtered queries and a removed one would go unnoticed",
+			len(filteredEntries))
+	}
+}
 
-		var fromModels, fromActivity int
-		var fromDailyCost float64
-		for _, m := range models {
-			fromModels += m.Calls
-		}
-		for _, d := range daily {
-			fromDailyCost += d.Cost
-		}
-		for _, b := range buckets {
-			fromActivity += b.Calls
-		}
-		if fromModels != totals.Calls {
-			t.Errorf("%+v: models total %d calls but Totals says %d", f, fromModels, totals.Calls)
-		}
-		// The daily grouping buckets by the call's own local date, so its span
-		// can differ from the activity window's; compare the cost it does cover
-		// only where every call falls inside the window.
-		if totals.LastTS > 0 && totals.FirstTS > 0 &&
-			totals.FirstTS >= from.Unix() && totals.LastTS <= to.Unix() &&
-			math.Abs(fromDailyCost-totals.Cost) > 0.01 {
-			t.Errorf("%+v: daily cost %.4f but Totals says %.4f", f, fromDailyCost, totals.Cost)
-		}
-		if fromActivity != totals.Calls {
-			t.Errorf("%+v: activity window %d calls but Totals says %d "+
-				"(the window and the filter must intersect, not override)",
-				f, fromActivity, totals.Calls)
-		}
+// TestWhereSessionAppliesEveryAxis checks the clause builder directly.
+//
+// whereSession() exists because the session table has no model column, so the
+// model filter has to be expressed as an EXISTS against the session's calls. That
+// is a translation, and a translation is exactly where a silently dropped clause
+// hides: the query still runs, still returns rows, and simply ignores one axis.
+func TestWhereSessionAppliesEveryAxis(t *testing.T) {
+	cut := time.Unix(1_700_000_000, 0)
+	for _, tc := range []struct {
+		name    string
+		f       Filter
+		wantHas []string
+		wantNot []string
+		args    int
+	}{
+		{
+			name: "nothing", f: Filter{},
+			wantNot: []string{"EXISTS", "model IN", "agent IN", "project IN", "last_ts"},
+		},
+		{
+			name: "model alone", f: Filter{Models: []string{"m"}},
+			wantHas: []string{"EXISTS", "model IN", "uid"},
+			wantNot: []string{"agent IN", "project IN", "last_ts"},
+			args:    1,
+		},
+		{
+			name: "agent alone", f: Filter{Agents: []string{"a"}},
+			wantHas: []string{"agent IN"},
+			wantNot: []string{"EXISTS", "project IN", "last_ts"},
+			args:    1,
+		},
+		{
+			name: "project alone", f: Filter{Projects: []string{"p"}},
+			wantHas: []string{"project IN"},
+			wantNot: []string{"EXISTS", "agent IN", "last_ts"},
+			args:    1,
+		},
+		{
+			name: "every axis",
+			f: Filter{Models: []string{"m"}, Agents: []string{"a"},
+				Projects: []string{"p"}, DateFrom: &cut, DateTo: &cut},
+			wantHas: []string{"EXISTS", "model IN", "agent IN", "project IN", "last_ts"},
+			args:    5,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clause, args := tc.f.whereSession("s")
+			for _, want := range tc.wantHas {
+				if !strings.Contains(clause, want) {
+					t.Errorf("clause %q does not mention %q: this axis is silently "+
+						"unfiltered", clause, want)
+				}
+			}
+			for _, unwanted := range tc.wantNot {
+				if strings.Contains(clause, unwanted) {
+					t.Errorf("clause %q mentions %q, which this filter does not set",
+						clause, unwanted)
+				}
+			}
+			// One argument per placeholder, or the query pairs a value with the
+			// wrong clause.
+			if got := strings.Count(clause, "?"); got != len(args) {
+				t.Errorf("clause has %d placeholders and %d args: %q / %v",
+					got, len(args), clause, args)
+			}
+			if tc.args > 0 && len(args) != tc.args {
+				t.Errorf("got %d args, want %d for %+v", len(args), tc.args, tc.f)
+			}
+			// The prefix has to reach every column it qualifies, including the one
+			// inside the EXISTS subquery.
+			if strings.Contains(clause, " FROM call mc WHERE mc.session_uid = uid") {
+				t.Errorf("clause %q leaves the EXISTS subquery unqualified, so with a "+
+					"prefix it would resolve uid against the wrong table", clause)
+			}
+		})
 	}
 }
 
@@ -382,5 +646,71 @@ func TestHistoryRangeReportsTheSpanTheCallsActuallyCover(t *testing.T) {
 	}
 	if !eo.IsZero() || !en.IsZero() {
 		t.Errorf("an empty database reported %s..%s, want two zero times", eo, en)
+	}
+}
+
+// TestModelFilterReachesEveryFilteredEntryPoint is the regression test for the
+// live ?model= HTTP 500.
+//
+// KNOWN RED on this branch, by one line of production code another agent is
+// fixing: Tools() and ProjectTools() build their clause with
+// f.where("t", "ts"), which qualifies the model column as `t.model` — and
+// tool_call has no model column, so the database rejects the statement and the
+// page serves a 500 for any model filter. The other six entry points apply the
+// model axis correctly, which is why only these two were ever wrong.
+//
+// The test is written against the fixed behaviour. It goes green when the
+// tool_call queries express the model filter as an EXISTS against the session's
+// calls, the same translation whereSession() uses; see the report for the exact
+// change.
+func TestModelFilterReachesEveryFilteredEntryPoint(t *testing.T) {
+	st, done := newFilterStore(t)
+	defer done()
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name string
+		f    Filter
+		want int
+	}{
+		{"one model", Filter{Models: []string{"m2"}}, 1},
+		{"two models", Filter{Models: []string{"m1", "m4"}}, 2},
+		{"no match", Filter{Models: []string{"absent"}}, 0},
+		{"model and project, agreeing", Filter{Models: []string{"m2"}, Projects: []string{"/p2"}}, 1},
+		// The axes must intersect, not override: m2 lives in /p2, so pairing it
+		// with /p1 selects nothing rather than falling back to either axis.
+		{"model and project, disagreeing", Filter{Models: []string{"m2"}, Projects: []string{"/p1"}}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			totals, err := st.Totals(ctx, tc.f)
+			if err != nil {
+				t.Fatalf("Totals(%+v): %v", tc.f, err)
+			}
+			if totals.Sessions != tc.want {
+				t.Fatalf("fixture: Totals(%+v) says %d sessions, want %d",
+					tc.f, totals.Sessions, tc.want)
+			}
+			for _, e := range filteredEntries {
+				got, err := e.call(ctx, st, tc.f)
+				if err != nil {
+					t.Errorf("%s(%+v): %v — a model filter that reaches the database "+
+						"as an unknown column is an HTTP 500 on the page", e.name, tc.f, err)
+					continue
+				}
+				if want := e.want(totals); got != want {
+					t.Errorf("%s(%+v) returned %d %s, want %d", e.name, tc.f, got, e.label, want)
+				}
+			}
+			// Daily's cost has to reconcile too, where the filter's calls fall in
+			// one local day.
+			daily, err := st.Daily(ctx, tc.f)
+			if err != nil {
+				t.Fatalf("Daily(%+v): %v", tc.f, err)
+			}
+			if len(daily) == 1 && math.Abs(daily[0].Cost-totals.Cost) > 0.01 {
+				t.Errorf("the daily chart costs $%.4f while Totals says $%.4f for the "+
+					"same single day", daily[0].Cost, totals.Cost)
+			}
+		})
 	}
 }
