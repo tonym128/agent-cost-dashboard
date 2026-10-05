@@ -285,10 +285,12 @@ func consumePi(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	cacheWrite := num(usage, "cacheWrite")
 	reasoning := num(usage, "reasoning")
 
-	// Reasoning, where reported, is a slice of output rather than an addition.
-	if reasoning > 0 && output >= reasoning {
-		output -= reasoning
-	}
+	// Reasoning is a slice of the reported output rather than an addition to it,
+	// so it is itemised out for display and the whole generated count is billed
+	// below. Splitting it out and then billing only the remainder is the bug
+	// this replaced: pi's own record with input 1800 / output 1900 / reasoning
+	// 640 stored $0.0369 where $0.0465 is correct — 20.6% under.
+	visible, reasoningOut := visibleOutput(output, reasoning)
 
 	llmSeconds := 0.0
 	if !ts.IsZero() && !ctx.lastRequest.IsZero() {
@@ -302,16 +304,18 @@ func consumePi(b *sessionBuilder, rec record, ctx *parseCtx) error {
 		Model:            model_,
 		Time:             ts,
 		InputTokens:      int(input),
-		OutputTokens:     int(output),
+		OutputTokens:     int(visible),
 		CacheReadTokens:  int(cacheRead),
 		CacheWriteTokens: int(cacheWrite),
-		ReasoningTokens:  int(reasoning),
+		ReasoningTokens:  int(reasoningOut),
 		LLMSeconds:       llmSeconds,
 	}
 	if id := str(d, "id"); id != "" {
 		c.CallKey = "msg:" + id
 	}
-	price(ctx.pricer, &c)
+	// The whole generated count is billed at the output rate, thinking included,
+	// so the split above is a display change and not a billing one.
+	priceGenerated(ctx.pricer, &c, int(output))
 	b.addCall(c)
 	b.observeTime(tsStr(ts))
 	return nil
@@ -833,13 +837,12 @@ func consumeGemini(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	if input < 0 {
 		input = 0
 	}
-	output := num(tokens, "output")
+	generated := num(tokens, "output")
 	cacheWrite := num(tokens, "cacheWrite")
-	reasoning := num(tokens, "thoughtsTokenCount")
-	if reasoning > output {
-		reasoning = output
-	}
-	output -= reasoning
+	// Google bills thinking at the output rate and reports it alongside the
+	// generated count rather than inside it, so it is itemised out for display
+	// and the whole generated count is billed below.
+	visible, reasoning := visibleOutput(generated, num(tokens, "thoughtsTokenCount"))
 
 	llmSeconds := 0.0
 	if !ts.IsZero() && !ctx.lastRequest.IsZero() {
@@ -866,7 +869,7 @@ func consumeGemini(b *sessionBuilder, rec record, ctx *parseCtx) error {
 		Model:            modelName,
 		Time:             ts,
 		InputTokens:      int(input),
-		OutputTokens:     int(output),
+		OutputTokens:     int(visible),
 		CacheReadTokens:  int(cacheRead),
 		CacheWriteTokens: int(cacheWrite),
 		ReasoningTokens:  int(reasoning),
@@ -875,7 +878,7 @@ func consumeGemini(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	if id := str(d, "id"); id != "" {
 		c.CallKey = "msg:" + id
 	}
-	price(ctx.pricer, &c)
+	priceGenerated(ctx.pricer, &c, int(generated))
 	b.addCall(c)
 	b.observeTime(tsStr(ts))
 	return nil
