@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,6 +29,11 @@ import (
 	"github.com/tonym128/agent-cost-dashboard/internal/store"
 	"github.com/tonym128/agent-cost-dashboard/internal/web"
 )
+
+// stopTimeout bounds how long shutdown waits for an in-flight scan pass to
+// notice the cancellation. Long enough for the pass that is nearly done, short
+// enough that ctrl-c still feels like ctrl-c.
+const stopTimeout = 30 * time.Second
 
 func main() {
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr))
@@ -133,7 +139,18 @@ func run(o options, command string, stdout io.Writer) error {
 	defer cancel()
 
 	if command == "serve-and-scan" {
-		go scanner.Run(ctx, o.interval)
+		var scannerDone sync.WaitGroup
+		scannerDone.Add(1)
+		go func() {
+			defer scannerDone.Done()
+			scanner.Run(ctx, o.interval)
+		}()
+		// Deferred after the store's Close above, so it runs *before* it on every
+		// exit path, including a listener that failed to bind. The scanner is the
+		// only writer, so it has to be stopped before the database goes away;
+		// otherwise a pass is part-way through its transaction when the
+		// connection closes under it.
+		defer func() { waitFor(&scannerDone, log) }()
 	}
 
 	logExposure(o, log)
@@ -179,6 +196,8 @@ func run(o options, command string, stdout io.Writer) error {
 
 	// Stop accepting requests, let in-flight ones finish, then close the
 	// database. Closing it first would fail whatever a request was still using.
+	// The scanner is stopped by the deferred wait below, after Shutdown returns
+	// and before the store closes.
 	// The scanner is stopped by the deferred wait above, after Shutdown returns
 	// and before the store closes.
 	log.Info("shutting down")
@@ -188,6 +207,27 @@ func run(o options, command string, stdout io.Writer) error {
 		log.Warn("graceful shutdown timed out", "error", err)
 	}
 	return nil
+}
+
+// waitFor blocks until the scanner has stopped, or stopTimeout passes.
+//
+// It is a timeout and not an unbounded wait because a scan pass reads every
+// transcript on the machine; on a cold home directory a stop could take a minute,
+// and a process that ignores ctrl-c is worse than one that exits having rolled
+// back. SQLite transactions are atomic, so a pass killed mid-flight leaves a
+// readable database and the next start re-reads the same files.
+func waitFor(wg *sync.WaitGroup, log *slog.Logger) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(stopTimeout):
+		log.Warn("scanner did not stop within the timeout; exiting mid-pass",
+			"timeout", stopTimeout)
+	}
 }
 
 // logExposure says plainly what the bind address implies. `dashd -addr 0.0.0.0`
