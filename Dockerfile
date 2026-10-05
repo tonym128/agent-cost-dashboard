@@ -76,7 +76,21 @@ RUN apk add --no-cache ca-certificates tzdata
 #       -v "$HOME/.local/share/opencode:/home/dashd/.local/share/opencode:ro" \
 #       -v dashd-data:/var/lib/dashd \
 #       -p 127.0.0.1:8753:8753 \
-#       ghcr.io/tonym128/dashd
+#       ghcr.io/tonym128/dashd \
+#       serve-and-scan -addr 0.0.0.0:8753 \
+#         -auth-token "$(openssl rand -hex 32)" \
+#         -models /usr/local/lib/dashd/models.json \
+#         -db /var/lib/dashd/dashboard.db
+#
+# The trailing command is required, and its absence is the point. The image
+# binds 127.0.0.1 inside the container by default, so `-p` on its own reaches
+# nothing; publishing the dashboard takes an explicit non-loopback bind and a
+# token, together, every time. See the long note at the bottom of this file.
+#
+# Repeating -models and -db is not ceremony: passing any command replaces CMD
+# wholesale, so those two flags go with it. -db in particular decides where the
+# database lives — the named volume above, or $HOME — and changing that by
+# accident is the kind of thing that looks fine until a container is replaced.
 #
 # Two traps, both hit and fixed while writing this:
 #
@@ -141,28 +155,64 @@ ENV HOME=/home/dashd
 # is the only state dashd owns.
 VOLUME ["/var/lib/dashd"]
 
-# The dashboard has no authentication. 127.0.0.1 inside the container is
-# correct for the probe; publishing it is done with `-p 127.0.0.1:8753:8753`
-# on the host so it is not reachable from the network.
+# EXPOSE is documentation, not a firewall: it publishes nothing on its own. It
+# is here because the healthcheck and the usual invocations both talk about
+# 8753, and a port you cannot name is a port you have to count.
+#
+# Note that the dashboard has no authentication unless -auth-token is given.
 EXPOSE 8753
 
 # getenv/wget come from busybox, which is already in Alpine. /healthz returns
-# stored totals and the last scan time, so a non-200 means either the server is
-# down or it never finished starting.
+# stored counts and the last scan time, so a non-200 means either the server is
+# down or it never finished starting. It is unauthenticated on purpose — see the
+# note in internal/web/auth.go about secrets in healthcheck commands — and it
+# returns counts only, nothing about what is being worked on.
 #
-# The address here must match -addr below.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# The address here must match -addr below. With the loopback default it does.
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget --quiet --spider "http://127.0.0.1:8753/healthz" || exit 1
 
-# -addr must be 0.0.0.0 to be reachable from outside the container; the default
-# 127.0.0.1 would serve the healthcheck but publish a dashboard nobody can load.
+# ---------------------------------------------------------------------------
+# The default binds 127.0.0.1 INSIDE the container, which is deliberate.
 #
-# Note that this CMD only applies when no command is given. `docker run img
-# scan` or `docker run img stats` replaces it wholesale, flags included. The
-# image is built so that still works: the price dump is discoverable on its own
-# and the database defaults under $HOME. See the note above.
+# The image previously defaulted to -addr 0.0.0.0:8753 so that the reflexively
+# typed
+#
+#     docker run -p 8753:8753 <image>
+#
+# would work. It also meant that exact command published every project path,
+# session title, model name and dollar figure on the network with no secret at
+# all, and the only thing standing between it and the open internet was a
+# startup log line. A default that publishes secrets because the documentation
+# said to is the wrong default; the mistake should be a container nothing can
+# reach.
+#
+# So the container now behaves like the binary does: loopback until told
+# otherwise. Because Docker's port publishing forwards to the container's
+# external interface rather than its loopback, `-p` alone now yields an
+# unreachable dashboard. Publishing is a deliberate two-part opt-in — an
+# explicit bind AND a token — which is the same rule the binary documents:
+#
+#     docker run ... <image> serve-and-scan \
+#       -addr 0.0.0.0:8753 -auth-token "$(openssl rand -hex 32)"
+#
+# There is deliberately no ENV DASHD_AUTH_TOKEN here. cmd/dashd reads the token
+# from the flag only — it does not consult the environment — so an ENV would be
+# a variable that silently does nothing, which is worse than no variable at all.
+# Support for DASHD_AUTH_TOKEN is a follow-up in cmd/, and it belongs there:
+#
+#     TODO: read DASHD_AUTH_TOKEN in cmd/dashd/cli.go, then add
+#       ENV DASHD_AUTH_TOKEN="" here with a comment saying the default is empty.
+#
+# With no command given, the container serves on its own loopback. That is still
+# useful: `docker run img scan` and `docker run img stats` are unaffected, and
+# the healthcheck above works either way.
+#
+# Note that this CMD only applies when no command is given. Any command you pass
+# replaces it wholesale, flags included, so an invocation that overrides CMD must
+# repeat -models and -db. See the verified invocation at the top of this file.
 ENTRYPOINT ["/usr/local/lib/dashd/dashd"]
 CMD ["serve-and-scan", \
-     "-addr", "0.0.0.0:8753", \
+     "-addr", "127.0.0.1:8753", \
      "-models", "/usr/local/lib/dashd/models.json", \
      "-db", "/var/lib/dashd/dashboard.db"]

