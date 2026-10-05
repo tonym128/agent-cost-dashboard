@@ -432,11 +432,9 @@ func TestAllowedStepListIsTheOneTheControlOffers(t *testing.T) {
 	// Every value the control offers must pass validation: a resolution the UI
 	// offers and the endpoint rejects is a dead control. The reverse does not
 	// have to hold — the endpoint accepts more than the page asks for, which is
-	// harmless — but the comment above allowedSteps claims it lists what the page
-	// offers, and it does not: 21600 (6-hourly) is accepted and not offered. That
-	// is reported rather than asserted, since activity.go is not a file this
-	// branch owns; the fix is either adding the option to the template or
-	// rewording the comment to say the list is a superset.
+	// harmless, and the comment above allowedSteps now says so. 21600 (6-hourly)
+	// is still accepted and not offered; that is reported below rather than
+	// asserted.
 	// Collected into a slice first: ranging a map and passing the loop variable
 	// straight into a generic call does not infer here (go1.27), which is a
 	// distraction from what this test is about.

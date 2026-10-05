@@ -107,8 +107,16 @@ func autoStep(from, to time.Time) int64 {
 	}
 }
 
-// Steps the page offers for an explicit resolution override: 5min, 15min,
-// hourly, 6-hourly, daily.
+// Steps accepted for an explicit resolution override: 5min, 15min, hourly,
+// 6-hourly, daily.
+//
+// A superset of what the page's Resolution control offers — the control lists
+// 5min, 15min, hourly and daily, and not the 6-hourly one. Accepting more than
+// is offered is deliberate: ?step= is a public query parameter, so the set that
+// matters is the set of resolutions the query path can ask for, not the four
+// buttons on the page. What must not happen is the reverse: an offered value
+// that this list rejects is a dead control returning HTTP 400, and that is
+// asserted.
 var allowedSteps = []int64{300, 900, 3600, 6 * 3600, 86400}
 
 func isAllowedStep(step int64) bool {

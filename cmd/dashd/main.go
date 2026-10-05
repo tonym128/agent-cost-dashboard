@@ -78,6 +78,12 @@ func run(o options, command string, stdout io.Writer) error {
 		o.opencode = filepath.Join(o.home, ".local/share/opencode/opencode.db")
 	}
 
+	// The store reports a database it could not chmod 0600 through this hook,
+	// rather than failing: a filesystem without permission bits should not stop
+	// the dashboard, and a database any local account can read should not start
+	// silently. It is wired before Open, because that is when the chmod happens.
+	store.Warn = log.Warn
+
 	st, err := store.Open(o.db)
 	if err != nil {
 		return err

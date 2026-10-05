@@ -2,8 +2,6 @@ package web
 
 import (
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -232,19 +230,15 @@ func TestParseFilterStateFallsBackToEmptyOnAMalformedDate(t *testing.T) {
 // TestFilterStateActiveIsComputedButNeverRead is the report the reviewer asked
 // for, as a test rather than a note.
 //
-// filterState.Active is assigned in parseFilter and read by nothing: no template
-// field, no Go comparison, no test. `state.Active = false` would therefore be a
-// permanent no-op, which the reviewer confirmed by breaking it.
+// This pins what parseFilter computes for Active, which the filter bar now
+// renders as a "Filtered" note beside the Clear link.
 //
-// This cannot fail while the field is unread — that is the point of it — so it is
-// written as an inventory: it names the field, asserts the value parseFilter
-// computes for a filtered query, and records that nothing consumes it. When
-// somebody does consume it, TestFilterStateActiveIsReadBySomething below fails
-// and the inventory is replaced with a real assertion.
-//
-// server.go is not a file this branch may edit, so the field cannot be deleted
-// here; see the report.
-func TestFilterStateActiveIsComputedButNeverRead(t *testing.T) {
+// It was originally an inventory: Active was assigned here and read by nothing —
+// no template field, no Go comparison — so `state.Active = false` was a permanent
+// no-op. The field is now wired into the template, and TestFilterStateActiveIs
+// Rendered below asserts that end of it, so the two halves are a value and its
+// observable consequence.
+func TestFilterStateActiveIsComputed(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		query string
@@ -275,66 +269,39 @@ func TestFilterStateActiveIsComputedButNeverRead(t *testing.T) {
 		})
 	}
 
-	t.Log("filterState.Active is computed and read by nothing: no template field " +
-		"and no Go comparison. Assigning false to it is a no-op. Deleting it (or " +
-		"wiring it into the template) needs server.go, which this branch does not own.")
 }
 
-// TestFilterStateActiveHasNoReader inventories the shipped sources.
+// TestFilterStateActiveIsRendered is the behavioural half of
+// TestFilterStateActiveIsComputed, and replaces an inventory that counted the
+// word "Active" across the template and the non-test Go files. That inventory
+// could only ever log: the field was unread, and a field cannot be exercised
+// without ceasing to be dead.
 //
-// The check is textual because "read by nothing" is a statement about the sources
-// rather than about behaviour: a field cannot be exercised without ceasing to be
-// dead. It reads the template and the non-test files of this package, so a reader
-// appearing in either is noticed.
-//
-// When it does appear, the log line says to replace this inventory with a
-// behavioural assertion; until then, the assertion in the test above is the one
-// that pins what parseFilter computes.
-func TestFilterStateActiveHasNoReader(t *testing.T) {
-	const needle = "Active"
-	readers := 0
+// The note is what the reader gets, so what is asserted is what they see: a
+// filtered page says it is filtered, and an unfiltered one does not. A page
+// claiming to be unfiltered while showing a third of the calls is the failure
+// this catches.
+func TestFilterStateActiveIsRendered(t *testing.T) {
+	const note = "filter-active-note"
 
-	template := readAsset(t, templateFS, "templates/index.html")
-	readers += countUses(template, needle)
-
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{"nothing filtered", "", false},
+		{"one model", "?model=a", true},
+		{"every control empty", "?model=&agent=&project=&date_from=&date_to=", false},
+		{"date only", "?date_from=2026-05-01", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newTestServer(t)
+			body := get(t, srv, "/"+tc.query).Body.String()
+			if got := strings.Contains(body, note); got != tc.want {
+				t.Errorf("the page renders %q = %v for %q, want %v", note, got, tc.query, tc.want)
+			}
+		})
 	}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		data, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		readers += countUses(string(data), needle)
-	}
-	// One use is the declaration in the struct and one is the assignment; both are
-	// writes, neither is a read.
-	if readers > 2 {
-		t.Logf("filterState.Active now has %d uses outside its declaration: "+
-			"replace this inventory with a behavioural assertion", readers-2)
-	} else {
-		t.Logf("filterState.Active has %d uses, all of them writes: it is still dead", readers)
-	}
-}
-
-// countUses counts lines mentioning needle, skipping comments so a note about the
-// field does not read as a reader of it.
-func countUses(src, needle string) int {
-	n := 0
-	for _, line := range strings.Split(src, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") {
-			continue
-		}
-		if strings.Contains(line, needle) {
-			n++
-		}
-	}
-	return n
 }
 
 // ---------------------------------------------------------------- helpers

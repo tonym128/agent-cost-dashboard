@@ -803,7 +803,17 @@ func geminiProjectForPath(path string) string {
 	if project == "" || project == "." || project == string(filepath.Separator) {
 		return ""
 	}
-	root := filepath.Join(os.Getenv("HOME"), ".gemini", "history", project, ".project_root")
+	// os.UserHomeDir rather than os.Getenv("HOME"): HOME is a Unix convention
+	// and is normally unset on Windows, so the join produced a CWD-relative
+	// ".gemini\history\..." that no installation has — the lookup failed and
+	// every Gemini session filed itself under its directory name instead of its
+	// working directory. Same call, and the same error handling, as
+	// internal/web/sources.go.
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return project
+	}
+	root := filepath.Join(home, ".gemini", "history", project, ".project_root")
 	data, err := os.ReadFile(root)
 	if err != nil {
 		// No history entry: the project name is the best available label, and is

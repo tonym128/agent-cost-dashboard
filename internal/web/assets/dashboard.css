@@ -832,6 +832,12 @@ footer {
     text-decoration: underline;
 }
 
+.filter-bar .filter-active-note {
+    color: var(--text-secondary);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
 .filter-group {
     display: flex;
     flex-direction: column;

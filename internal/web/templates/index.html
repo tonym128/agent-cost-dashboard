@@ -48,6 +48,9 @@
       <div class="filter-actions">
         <button type="submit">Apply</button>
         <a href="/" class="clear-link">Clear</a>
+        {{if .FilterState.Active}}
+        <span class="filter-active-note">Filtered &mdash; Clear returns to everything.</span>
+        {{end}}
       </div>
     </form>
   </div>

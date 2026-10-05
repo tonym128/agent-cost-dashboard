@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/tonym128/agent-cost-dashboard/internal/model"
+	"github.com/tonym128/agent-cost-dashboard/internal/scan"
 )
 
 // Source detection.
@@ -22,28 +24,71 @@ import (
 // for "found": a row with zero files means the agent's log directory was walked
 // and was empty or absent, which is a different fact from "never scanned".
 
+// sourceNote is why a miss in one agent's log location is usually not a dashd
+// bug. It is the only thing the panel knows that the scanner does not.
+var sourceNote = map[string]string{
+	model.AgentPi:       "pi writes one JSONL file per session.",
+	model.AgentClaude:   "One directory per project, one JSONL file per session.",
+	model.AgentCodex:    "JSONL, sharded by date.",
+	model.AgentGemini:   "JSONL under the agent's own directory.",
+	model.AgentAgy:      "SQLite rather than JSONL, so a missing file simply yields no rows.",
+	model.AgentOpencode: "A single SQLite database holds every session.",
+}
+
 // knownSources is the set of agents this build can read, with the log location
 // each is looked for in.
 //
-// The paths mirror scan.DefaultSources: they are shown so a miss can be acted
-// on, and they are the first thing to check when an agent reports nothing. They
-// are duplicated rather than imported because the scanner resolves its roots
-// against a configurable -home that the web layer does not know; showing the
-// default location is what is useful, and the scanner section below reports what
-// was actually walked.
-var knownSources = []struct {
+// The locations are scan.HomeRelativeRoots, not a second copy of it. They are
+// shown so a miss can be acted on, and they are the first thing to check when an
+// agent reports nothing — which only helps if they are the directories the
+// scanner actually walked. The hint is written `~/`-prefixed because the scanner
+// resolves its roots against a configurable -home that the web layer does not
+// know, so the default location is what is useful here; the scanner section of
+// the page reports what was really walked.
+//
+// Built from the map rather than listed, so an agent the scanner can read cannot
+// be missing from the panel: the loop is over the scanner's own keys, and a note
+// is only the prose beside them.
+var knownSources = buildKnownSources()
+
+func buildKnownSources() []struct {
 	Agent string
 	// Hint is where this agent keeps its session logs, relative to $HOME.
 	Hint string
 	// Note is why a miss here is usually not a dashd bug.
 	Note string
-}{
-	{model.AgentPi, "~/.pi/agent/sessions", "pi writes one JSONL file per session."},
-	{model.AgentClaude, "~/.claude/projects", "One directory per project, one JSONL file per session."},
-	{model.AgentCodex, "~/.codex/sessions", "JSONL, sharded by date."},
-	{model.AgentGemini, "~/.gemini", "JSONL under the agent's own directory."},
-	{model.AgentAgy, "~/.gemini/antigravity/conversations", "SQLite rather than JSONL, so a missing file simply yields no rows."},
-	{model.AgentOpencode, "~/.local/share/opencode/opencode.db", "A single SQLite database holds every session."},
+} {
+	agents := make([]string, 0, len(scan.HomeRelativeRoots))
+	for agent := range scan.HomeRelativeRoots {
+		agents = append(agents, agent)
+	}
+	// Sorted, because a map's iteration order is not stable and the panel's row
+	// order must not shuffle between page loads.
+	slices.Sort(agents)
+
+	out := make([]struct {
+		Agent string
+		Hint  string
+		Note  string
+	}, 0, len(agents))
+	for _, agent := range agents {
+		note, ok := sourceNote[agent]
+		if !ok {
+			// An agent the scanner reads and the panel cannot describe would
+			// render an empty cell. Say so rather than rendering nothing.
+			note = "Logs read by the scanner."
+		}
+		out = append(out, struct {
+			Agent string
+			Hint  string
+			Note  string
+		}{
+			Agent: agent,
+			Hint:  "~/" + filepath.ToSlash(scan.HomeRelativeRoots[agent]),
+			Note:  note,
+		})
+	}
+	return out
 }
 
 // sourceView is one agent's detection result.
