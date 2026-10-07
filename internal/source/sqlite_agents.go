@@ -170,8 +170,9 @@ func (p *AntigravityParser) consumeStep(b *sessionBuilder, idx int64, stepType, 
 		}
 	}
 
-	stepStart := time.Unix(startSec, 0).UTC()
+	var stepStart time.Time
 	if hasStart {
+		stepStart = time.Unix(startSec, 0).UTC()
 		b.observeTime(tsStr(stepStart))
 	}
 

@@ -120,12 +120,12 @@ jobs:
         shell: bash
         run: |
           # RAISE THIS as coverage improves. Never lower it.
-          # Current measured total on linux: 47.1%
-          #   cmd 0.0%, scan 52.9%, source 48.4%, store 36.0%, web 72.2%
+          # Current measured total on linux: ~83%
+          #   cmd ~41%, scan ~87%, source ~90%, store ~71%, web ~90%
           # The floor sits below the current number on purpose: its job is to
           # stop coverage falling, not to be a target in itself. Raise it in
-          # small steps (45 -> 46 -> 47) as tests are added.
-          FLOOR=45.0
+          # small steps as tests are added.
+          FLOOR=80.0
 
           # The floor is judged on the linux profile alone. The three platforms
           # run the same tests over the same statements, so merging them would
@@ -180,3 +180,47 @@ jobs:
       # documented there. Keep the two in step.
       - name: staticcheck
         run: make lint
+
+  fuzz:
+    name: fuzz parsers
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      # Replay the committed corpus is covered by `go test`; this runs each
+      # target for a short budget to catch inputs the corpus did not.
+      - run: go test ./internal/source/ -run Fuzz -fuzz FuzzProtoDecode -fuzztime 30s
+      - run: go test ./internal/source/ -run Fuzz -fuzz FuzzScanLines -fuzztime 30s
+      - run: go test ./internal/source/ -run Fuzz -fuzz FuzzClaudeLine -fuzztime 30s
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  container:
+    name: container builds
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Catches a Dockerfile or .dockerignore regression (for example dropping
+      # models.json) before a tag rather than at release time.
+      - run: docker build -t dashd:ci .
+      - run: docker run --rm dashd:ci -version

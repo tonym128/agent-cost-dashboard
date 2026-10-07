@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testToken = "correct-horse-battery-staple"
@@ -18,6 +19,41 @@ type okHandler struct{}
 func (okHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	io.WriteString(w, "dashboard")
+}
+
+// TestWithAuthCoversEveryRealRoute wires the auth middleware around the actual
+// server mux (not a stub) and checks that every route requires the token, with
+// /healthz the documented exception. This catches a route being registered
+// outside the WithAuth wrapper, which auth_test.go's fake handler cannot.
+func TestWithAuthCoversEveryRealRoute(t *testing.T) {
+	srv, st := newTestServer(t)
+	seed(t, st, time.Now())
+	const token = "secret"
+	h := WithAuth(token, nil, srv.Handler())
+
+	routes := []string{"/", "/assets/dashboard.css", "/api/activity", "/session?uid=sess-a"}
+	for _, r := range routes {
+		req := httptest.NewRequest(http.MethodGet, r, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s without token: got %d, want 401", r, rec.Code)
+		}
+		req = httptest.NewRequest(http.MethodGet, r, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s with token: got %d, want 200", r, rec.Code)
+		}
+	}
+	// /healthz stays open in both directions.
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("/healthz without token: got %d, want 200", rec.Code)
+	}
 }
 
 func discardLog() *slog.Logger {

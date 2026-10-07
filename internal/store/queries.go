@@ -243,7 +243,7 @@ func (s *Store) Totals(ctx context.Context, f Filter) (Totals, error) {
 		       COALESCE(MIN(NULLIF(ts,0)),0), COALESCE(MAX(ts),0)
 		FROM call` + where
 	var t Totals
-	err := s.db.QueryRowContext(ctx, q, args...).Scan(
+	err := s.q.QueryRowContext(ctx, q, args...).Scan(
 		&t.Cost, &t.Calls, &t.TotalTokens, &t.InputTokens, &t.OutputTokens,
 		&t.CacheReadTokens, &t.CacheWriteTokens, &t.ReasoningTokens, &t.LLMSeconds,
 		&t.UnpricedCalls, &t.FirstTS, &t.LastTS)
@@ -253,23 +253,27 @@ func (s *Store) Totals(ctx context.Context, f Filter) (Totals, error) {
 
 	// Sessions and projects come from the session table, filtered the same way.
 	sw, sargs := f.whereSession("s")
-	row := s.db.QueryRowContext(ctx,
+	row := s.q.QueryRowContext(ctx,
 		`SELECT COUNT(*), COUNT(DISTINCT project), COUNT(DISTINCT agent) FROM session s`+sw, sargs...)
 	if err := row.Scan(&t.Sessions, &t.Projects, &t.Agents); err != nil {
 		return t, fmt.Errorf("totals sessions: %w", err)
 	}
-	t.ToolSeconds = s.toolSeconds(ctx, f)
+	ts, err := s.toolSeconds(ctx, f)
+	if err != nil {
+		return t, fmt.Errorf("totals tool seconds: %w", err)
+	}
+	t.ToolSeconds = ts
 	return t, nil
 }
 
-func (s *Store) toolSeconds(ctx context.Context, f Filter) float64 {
-	w, args := f.where("", "ts")
+func (s *Store) toolSeconds(ctx context.Context, f Filter) (float64, error) {
+	w, args := f.whereToolCall("t")
 	var v sql.NullFloat64
 	q := `SELECT SUM(t.seconds) FROM tool_call t` + w
-	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&v); err != nil {
-		return 0
+	if err := s.q.QueryRowContext(ctx, q, args...).Scan(&v); err != nil {
+		return 0, err
 	}
-	return v.Float64
+	return v.Float64, nil
 }
 
 // DayBucket is one calendar day of activity.
@@ -299,7 +303,7 @@ func dailySQL(where string) string {
 // risking a timezone disagreement.
 func (s *Store) Daily(ctx context.Context, f Filter) ([]DayBucket, error) {
 	where, args := f.where("", "ts")
-	rows, err := s.db.QueryContext(ctx, dailySQL(where), args...)
+	rows, err := s.q.QueryContext(ctx, dailySQL(where), args...)
 	if err != nil {
 		return nil, fmt.Errorf("daily: %w", err)
 	}
@@ -360,7 +364,7 @@ type ActivityBucket struct {
 func (s *Store) HistoryRange(ctx context.Context, f Filter) (oldest, newest time.Time, err error) {
 	w, args := f.where("", "ts")
 	var o, n sql.NullInt64
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.q.QueryRowContext(ctx,
 		"SELECT MIN(NULLIF(ts,0)), MAX(ts) FROM call"+w, args...).Scan(&o, &n); err != nil {
 		return time.Time{}, time.Time{}, err
 	}
@@ -403,7 +407,7 @@ func (s *Store) Activity(ctx context.Context, f Filter, from, to time.Time, step
 		       COALESCE(SUM(CASE WHEN priced = 0 THEN 1 ELSE 0 END),0)
 		FROM call` + where + `
 		GROUP BY bucket ORDER BY bucket`
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.q.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("activity: %w", err)
 	}
@@ -456,7 +460,7 @@ func modelsSQL(where string) string {
 // Models returns per-model totals, most expensive first.
 func (s *Store) Models(ctx context.Context, f Filter) ([]ModelStat, error) {
 	where, args := f.where("", "ts")
-	rows, err := s.db.QueryContext(ctx, modelsSQL(where), args...)
+	rows, err := s.q.QueryContext(ctx, modelsSQL(where), args...)
 	if err != nil {
 		return nil, fmt.Errorf("models: %w", err)
 	}
@@ -488,7 +492,7 @@ type ProjectStat struct {
 // Projects returns per-project totals.
 func (s *Store) Projects(ctx context.Context, f Filter) ([]ProjectStat, error) {
 	where, args := f.whereSession("s")
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT s.project, s.agent,
 		       COALESCE(SUM(s.cost_usd),0), COALESCE(SUM(s.calls),0),
 		       COUNT(*), COALESCE(MIN(NULLIF(s.first_ts,0)),0), COALESCE(MAX(s.last_ts),0)
@@ -552,7 +556,7 @@ func (s *Store) Tools(ctx context.Context, f Filter) ([]ToolStat, error) {
 	// (session_uid, ts) rather than a rescan — which is what call_session_ts
 	// exists for, and what call_session alone did not provide: the primary key
 	// orders a session's calls by call_key, not by ts.
-	rows, err := s.db.QueryContext(ctx, toolsSQL(where), args...)
+	rows, err := s.q.QueryContext(ctx, toolsSQL(where), args...)
 	if err != nil {
 		return nil, fmt.Errorf("tools: %w", err)
 	}
@@ -630,7 +634,7 @@ func (s *Store) Sessions(ctx context.Context, f Filter, limit int) ([]SessionRow
 		limit = 5000
 	}
 	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT `+sessionColumns+`
 		FROM session s`+where+`
 		ORDER BY s.last_ts DESC LIMIT ?`, args...)
@@ -663,7 +667,7 @@ func (s *Store) Sessions(ctx context.Context, f Filter, limit int) ([]SessionRow
 // is a bug the old shape had and this cannot: the row is in the table, the
 // lookup simply never saw it. And a miss no longer reads any row at all.
 func (s *Store) Session(ctx context.Context, uid string) (SessionRow, bool, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.q.QueryContext(ctx,
 		`SELECT `+sessionColumns+` FROM session WHERE uid = ?`, uid)
 	if err != nil {
 		return SessionRow{}, false, fmt.Errorf("session %s: %w", uid, err)
@@ -689,7 +693,7 @@ func (s *Store) Session(ctx context.Context, uid string) (SessionRow, bool, erro
 // filter makes that axis impossible to widen again.
 func (s *Store) Facets(ctx context.Context) (models, agents, projects []string, minTS, maxTS int64, err error) {
 	collect := func(col string) ([]string, error) {
-		rows, qErr := s.db.QueryContext(ctx,
+		rows, qErr := s.q.QueryContext(ctx,
 			"SELECT DISTINCT "+col+" FROM call WHERE "+col+" != '' ORDER BY "+col)
 		if qErr != nil {
 			return nil, qErr
@@ -715,7 +719,7 @@ func (s *Store) Facets(ctx context.Context) (models, agents, projects []string, 
 		return nil, nil, nil, 0, 0, err
 	}
 	var nullMin, nullMax sql.NullInt64
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.q.QueryRowContext(ctx,
 		"SELECT MIN(NULLIF(ts,0)), MAX(ts) FROM call").Scan(&nullMin, &nullMax); err != nil {
 		return nil, nil, nil, 0, 0, err
 	}
@@ -744,7 +748,7 @@ func (s *Store) Reprice(ctx context.Context, price func(model string, in, out, c
 	// *lowered* every total — measured at 12.3% on the committed reference
 	// conversation. Reprice must reproduce the scan-time arithmetic exactly, or
 	// the documented remedy for stale prices is itself a source of wrong money.
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.q.QueryContext(ctx,
 		`SELECT session_uid, call_key, model, input_tokens, output_tokens,
 		        reasoning_tokens, cache_read_tokens, cache_write_tokens FROM call`)
 	if err != nil {
@@ -815,7 +819,7 @@ type CallRow struct {
 // up, which is the point of storing them: the transcript's cost breakdown
 // outlives the log that produced it.
 func (s *Store) SessionCalls(ctx context.Context, uid string) ([]CallRow, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT ts, model, input_tokens, output_tokens, cache_read_tokens,
 		       cache_write_tokens, reasoning_tokens, total_tokens, llm_seconds,
 		       cost_usd, priced
@@ -866,7 +870,7 @@ func projectModelsSQL(where string) string {
 // project rows.
 func (s *Store) ProjectModels(ctx context.Context, f Filter) ([]ProjectModel, error) {
 	where, args := f.where("", "ts")
-	rows, err := s.db.QueryContext(ctx, projectModelsSQL(where), args...)
+	rows, err := s.q.QueryContext(ctx, projectModelsSQL(where), args...)
 	if err != nil {
 		return nil, fmt.Errorf("project models: %w", err)
 	}
@@ -895,7 +899,7 @@ type ProjectTool struct {
 // ProjectTools returns the tool breakdown per project.
 func (s *Store) ProjectTools(ctx context.Context, f Filter) ([]ProjectTool, error) {
 	where, args := f.whereToolCall("t")
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT t.project, t.tool, COUNT(*), COALESCE(SUM(t.seconds),0),
 		       COALESCE(SUM(t.is_error),0)
 		FROM tool_call t`+where+`

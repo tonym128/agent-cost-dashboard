@@ -97,9 +97,11 @@ func TestParseFilterCoversTheWholeEndDay(t *testing.T) {
 	if f.DateTo == nil {
 		t.Fatal("a date_to filter produced no upper bound")
 	}
-	// Local midnight plus a day, less a second.
+	// Local midnight plus a day, less a second — expressed as calendar
+	// arithmetic so the bound lands on 23:59:59 on the named day even across a
+	// DST transition (when a day is 23 or 25 hours long).
 	want := time.Date(2026, 6, 15, 0, 0, 0, 0, time.Local).
-		Add(24*time.Hour - time.Second)
+		AddDate(0, 0, 1).Add(-time.Second)
 	if !f.DateTo.Equal(want) {
 		t.Errorf("date_to = %s, want %s: the whole of the day is included, not "+
 			"only its first instant", f.DateTo, want)
@@ -139,6 +141,38 @@ func TestParseFilterCoversTheWholeEndDay(t *testing.T) {
 		t.Errorf("date range = %s..%s, want the order the query gave: an inverted "+
 			"range selects nothing rather than being reinterpreted",
 			f.DateFrom, f.DateTo)
+	}
+}
+
+// TestParseFilterDateToAcrossDST pins the calendar-arithmetic upper bound for
+// days that are 23 or 25 hours long. The old formula added an absolute 24h
+// minus a second, which over-included the first hour of the next day on the
+// spring-forward and silently dropped the last hour of the named day on the
+// fall-back.
+func TestParseFilterDateToAcrossDST(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("tzdata unavailable")
+	}
+	prev := time.Local
+	time.Local = loc
+	defer func() { time.Local = prev }()
+
+	for _, date := range []string{"2026-03-08", "2026-11-01"} {
+		q, _ := url.ParseQuery("date_to=" + date)
+		f, _, err := parseFilter(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.DateTo == nil {
+			t.Fatalf("%s: no upper bound", date)
+		}
+		if f.DateTo.Hour() != 23 || f.DateTo.Minute() != 59 || f.DateTo.Second() != 59 {
+			t.Errorf("%s: date_to = %s, want 23:59:59 on the named day", date, f.DateTo)
+		}
+		if got := f.DateTo.Format("2006-01-02"); got != date {
+			t.Errorf("%s: date_to falls on %s, want the named day", date, got)
+		}
 	}
 }
 

@@ -2,7 +2,9 @@ package source
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -65,21 +67,69 @@ func scanLines(path string, from int64) (recs []record, consumed int64, err erro
 		return nil, 0, err
 	}
 
-	for {
-		line, readErr := reader.ReadString('\n')
-		if readErr != nil {
-			// io.EOF with no bytes, or a trailing fragment: stop here and leave
-			// `consumed` pointing at the last complete line.
-			break
-		}
-		pos += int64(len(line))
-		if len(line) > maxLineBytes {
-			return recs, pos, fmt.Errorf("line at offset %d exceeds %d bytes", pos, maxLineBytes)
-		}
-		recs = append(recs, record{Data: decodeObject(line), End: pos, Ordinal: ordinal})
+	// Scanner rather than Reader.ReadString because ReadString grows its buffer
+	// until it finds the delimiter: checking the length afterwards capped
+	// nothing, so a corrupt file with no newline was read into memory in full
+	// before being rejected. Scanner enforces the buffer as it accumulates, and
+	// reports ErrTooLong without ever holding more than maxLineBytes.
+	sc := bufio.NewScanner(reader)
+	sc.Buffer(make([]byte, 0, 64<<10), maxLineBytes)
+	sc.Split(scanCompleteLines)
+	for sc.Scan() {
+		line := sc.Bytes()
+		pos += int64(len(line)) + 1 // +1 for the '\n' the split consumed
+		recs = append(recs, record{Data: decodeBytes(line), End: pos, Ordinal: ordinal})
 		ordinal++
 	}
+	if serr := sc.Err(); serr != nil {
+		// A line over the cap, or a read error. The records decoded before it
+		// are still valid, but the caller must not treat this as "read to
+		// end": the returned error stops the source being advanced past a
+		// record that was never consumed.
+		if errors.Is(serr, bufio.ErrTooLong) {
+			return recs, pos, fmt.Errorf("line near offset %d exceeds %d bytes", pos, maxLineBytes)
+		}
+		return recs, pos, serr
+	}
 	return recs, pos, nil
+}
+
+// scanCompleteLines is bufio.ScanLines with one difference that matters here:
+// a final line with no terminating newline is never emitted.
+//
+// An agent writes its log live, so the last line is routinely half-written.
+// bufio.ScanLines hands that fragment back as a token, which would either drop
+// the record or — worse — treat a truncated fragment as a complete one and let
+// a call be parsed from half a JSON object. Only whole lines are consumed, and
+// the scanner's position is never advanced past one, so the next pass resumes
+// from the same place.
+func scanCompleteLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	// No newline in what we have. Ask for more; at EOF the trailing fragment is
+	// left for the next pass rather than returned.
+	if atEOF && len(data) > 0 {
+		return 0, nil, nil
+	}
+	return 0, nil, nil
+}
+
+// decodeBytes parses one line held as bytes, avoiding the copy that
+// decodeObject(string) would make for every record in a large log.
+func decodeBytes(line []byte) map[string]any {
+	if len(line) < 2 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(line, &v); err != nil {
+		return nil
+	}
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return obj
 }
 
 // decodeObject parses one line, returning nil for anything unusable.

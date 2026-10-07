@@ -31,9 +31,10 @@ COPY . .
 # linked binary: no libc, no musl, nothing needed at runtime.
 #
 # -trimpath removes local filesystem paths from the binary so the build does
-# not depend on where it ran. These three -X flags are wired up for the future:
-# cmd/dashd does not currently declare main.version/commit/date, so Go silently
-# ignores them. They are harmless and start working the moment those vars land.
+# not depend on where it ran. The three -X flags below set the version, commit
+# and build date; cmd/dashd declares all three in version.go, so they take
+# effect. (They did not, once: Go silently discards an -X for an undeclared
+# symbol, which is why version.go now exists and documents the trap.)
 ARG VERSION=dev
 ARG COMMIT=none
 ARG DATE=unknown

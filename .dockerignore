@@ -31,8 +31,9 @@ dist/
 .idea/
 .vscode/
 
-# Docs and packaging are not needed to compile or run the binary.
-# (README.md and LICENSE are still fetched explicitly into the image.)
+# Docs and packaging are not needed to compile or run the binary, and the
+# image fetches nothing back in: the runtime stage copies only the binary and
+# models.json.
 README.md
 packaging/
 Makefile

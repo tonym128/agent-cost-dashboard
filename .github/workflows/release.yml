@@ -124,6 +124,7 @@ jobs:
     # read-only, and publishing a release is the one thing that needs write.
     permissions:
       contents: write
+      packages: write
     # ghcr.io push. The GHCR token is the GITHUB_TOKEN with packages: write.
     steps:
       - name: Check out the repository

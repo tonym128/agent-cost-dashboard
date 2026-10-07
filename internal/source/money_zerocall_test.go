@@ -156,6 +156,52 @@ func TestAntigravityZeroUsageStepIsNotACall(t *testing.T) {
 	}
 }
 
+// TestAntigravityStepWithoutStartTimestampStaysUndated makes sure a step whose
+// metadata omits the start timestamp (field 1) is not stamped 1970-01-01. Such
+// a call was landing in a real "day" bucket of 1970 and polluting the daily
+// chart and month totals.
+func TestAntigravityStepWithoutStartTimestampStaysUndated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conv.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE steps (
+		idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL DEFAULT 0,
+		status INTEGER NOT NULL DEFAULT 0, has_subtrajectory numeric NOT NULL DEFAULT false,
+		metadata blob, error_details blob, permissions blob, task_details blob,
+		render_info blob, step_payload blob, step_format INTEGER NOT NULL DEFAULT 0)`); err != nil {
+		t.Fatal(err)
+	}
+	// Usage block only, with no field-1 start timestamp.
+	usage := protoVarint(1, 1037)
+	usage = append(usage, protoVarint(2, 500)...)
+	usage = append(usage, protoVarint(3, 120)...)
+	usage = append(usage, protoVarint(5, 900)...)
+	usage = append(usage, protoVarint(9, 40)...)
+	meta := protoBytes(9, usage)
+	if _, err := db.Exec(`INSERT INTO steps (idx, step_type, metadata) VALUES (1, 15, ?)`, meta); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	sv, _, err := NewAntigravityParser().Parse(path, model.ScanState{}, testPricer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkInvariants(t, sv)
+	if len(sv.Calls) != 1 {
+		t.Fatalf("parsed %d calls, want 1", len(sv.Calls))
+	}
+	c := sv.Calls[0]
+	if !c.Time.IsZero() {
+		t.Errorf("call without a start timestamp is dated %v, want the zero time", c.Time)
+	}
+	if c.Day != "" {
+		t.Errorf("call without a start timestamp has day %q, want empty", c.Day)
+	}
+}
+
 // TestOpenCodeZeroUsageMessageIsNotACall covers the sixth.
 func TestOpenCodeZeroUsageMessageIsNotACall(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode.db")

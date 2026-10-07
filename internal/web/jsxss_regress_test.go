@@ -144,3 +144,43 @@ func TestJSHasNoInlineEventHandlers(t *testing.T) {
 		t.Error("the delegated listener is defined but never installed")
 	}
 }
+
+// TestJSSortableColumnsKeepTheirColumnHeaderRole locks the accessibility fix in
+// setupSorting. Applying role="button" to the <th> overwrote its implicit
+// columnheader role, which cost every table on the page its column headers to a
+// screen reader and made the aria-sort on the same element invalid. The sort
+// control is now a real <button> inside the heading.
+//
+// This asserts on the script text because the DOM stub cannot model the
+// "#id th[data-sort]" query setupSorting runs; the behavioural gap that leaves
+// is called out in the review.
+func TestJSSortableColumnsKeepTheirColumnHeaderRole(t *testing.T) {
+	script := readAsset(t, assets, "assets/dashboard.js")
+	if strings.Contains(script, "setAttribute('role', 'button')") {
+		t.Error("dashboard.js still sets role=button on a sortable heading, " +
+			"which removes the columnheader role and invalidates aria-sort")
+	}
+	if !strings.Contains(script, "sort-btn") {
+		t.Error("the sortable heading no longer builds a sort-btn button, so the " +
+			"column is left with no keyboard-operable control")
+	}
+}
+
+// TestJSProjectDisclosureIsKeyboardOperable locks the second blocker: the project
+// drill-down row was click-only, so its entire model/tool breakdown was
+// unreachable by keyboard (WCAG 2.1.1).
+func TestJSProjectDisclosureIsKeyboardOperable(t *testing.T) {
+	script := readAsset(t, assets, "assets/dashboard.js")
+	code := stripLineComments(script)
+	if !strings.Contains(script, `data-toggle-project="${rowId}" tabindex="0"`) {
+		t.Error("the project row carries no tabindex, so the drill-down cannot be " +
+			"reached by keyboard")
+	}
+	if !strings.Contains(script, "aria-expanded") {
+		t.Error("the project row never sets aria-expanded, so its open state is " +
+			"not announced")
+	}
+	if !strings.Contains(code, "keydown") {
+		t.Error("no keydown handler exists, so Enter/Space cannot open the row")
+	}
+}

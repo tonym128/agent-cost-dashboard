@@ -788,7 +788,26 @@ func TestRunPassesImmediatelyAndStopsOnCancellation(t *testing.T) {
 	}
 
 	// And the pass status is visible to the endpoint that reports it.
-	lastRun, running := sc.Status()
+	//
+	// lastRun is stamped at the end of a pass, so polling for ingested rows
+	// first is not enough: a pass commits its calls before it records that it
+	// finished, and reading Status() in that window saw a pass still running.
+	// Wait for the thing this asserts.
+	deadline = time.Now().Add(10 * time.Second)
+	var lastRun time.Time
+	var running bool
+	for {
+		lastRun, running = sc.Status()
+		if !lastRun.IsZero() {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-stopped
+			t.Fatal("Status reports no last-run time 10s after calls were ingested")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if lastRun.IsZero() {
 		t.Error("Status reports no last-run time after a pass")
 	}
@@ -1181,9 +1200,16 @@ func TestScanOpenCodeReportsAnUnreadableDatabase(t *testing.T) {
 
 	st := newTestStore(t)
 	sc := buildOpenCodeScanner(t, st, path)
-	// The pass itself must succeed: one broken source must not stop the others.
-	if err := sc.RunOnce(context.Background()); err != nil {
-		t.Fatalf("an unreadable OpenCode database failed the whole pass: %v", err)
+	// The pass itself must still run all sources: one broken source must not
+	// stop the others. But the failure must now surface in the return value so
+	// a cron-driven caller's exit code reflects it.
+	err = sc.RunOnce(context.Background())
+	if err == nil {
+		t.Fatal("an unreadable OpenCode database returned a nil error; the failure " +
+			"must surface so cron/systemd see a non-zero exit")
+	}
+	if !strings.Contains(err.Error(), "opencode") {
+		t.Fatalf("error should name the failing source, got %v", err)
 	}
 
 	statuses, _ := st.ScanStatuses()

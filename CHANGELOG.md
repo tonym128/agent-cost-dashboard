@@ -9,6 +9,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A model-filtered page reported `0` tool seconds.** `toolSeconds` built its
+  clause with the call-table helper, emitting `model IN (...)` against
+  `tool_call` — a table with no `model` column — and discarded the resulting SQL
+  error into a confident `0`. The "Tool Time" card read `0s`, and because every
+  tool row's percentage divides by it, the whole tool table showed `0%` shares
+  against non-zero seconds on the same screen. This is the same defect class as
+  the `?model=` 500 fixed below, in the one call site that was missed; it now
+  uses the tool-table helper and returns the error instead of swallowing it.
+- **The session page double-escaped untrusted text.** `sessionView` and
+  `callViews` pre-escaped with `html.EscapeString` on top of `html/template`'s
+  own escaping, so a session title, project path or model name containing
+  `& < > " '` rendered as literal `&amp;amp;` on `/session`. The index page was
+  unaffected, which is why the escaping test did not catch it: it only requested
+  `/`.
+- **An incremental append could move a session out of its project bucket.** An
+  append resumes past the log's header record, which is where most agents carry
+  the working directory, so the parser reports no project. That empty value was
+  written over the stored one, so a growing pi, Codex or Gemini session drifted
+  into an empty project and split the per-project rollup across two rows. The
+  stored project is now recovered before writing, and an empty per-row project
+  falls back to it.
+- **An Antigravity step with no start timestamp was dated 1970-01-01.** The
+  timestamp was computed before the guard that checked for one, so a step
+  missing that field carried a real cost into a 1970 day bucket, which rendered
+  as a date row and a "January 1970" monthly total. Zero is the zero time here,
+  as it already was for every other parser.
+- **A date filter mis-bounded its end day across a DST transition.** The upper
+  bound was computed as midnight plus an absolute 24 hours less a second, which
+  over-included the first hour of the next day on the spring-forward and
+  silently dropped the last hour of the named day on the fall-back. It is
+  calendar arithmetic now, and the test pins both transitions.
+- **`/healthz` could not stall behind a scan, and neither could a page load see
+  a torn database.** Two related fixes to the claim the package makes about WAL:
+  `Scanner.Status` took the same mutex a whole pass holds, so the health probe
+  blocked for the pass's duration; and the index handler issued eleven separate
+  queries with no transaction, so its payload could describe two different
+  databases when a scan committed mid-render. `Status` now reads the pass state
+  under its own lock, and the page's rollups all run inside one read
+  transaction, which WAL serves without blocking the writer.
+- **The orphaned-session state never reached the page.** The mechanism worked —
+  a session whose log has been rotated away is flagged, its figures kept — but
+  neither the sessions payload nor the session view emitted the flag, so every
+  row offered a transcript link that cannot open and the explanation never
+  rendered. The documented behaviour is what the page now does.
+- **`dashd scan` exited 0 when every source failed.** Per-source errors were
+  recorded for the UI and then discarded, so a cron job or a systemd
+  `Type=oneshot` timer reported success after ingesting nothing — invisible to
+  exactly the supervisors the split `scan`/`serve` deployment depends on. Source
+  failures are now joined into the returned error while every source still runs.
+- **`maxLineBytes` capped nothing.** The limit was checked after the reader had
+  already grown its buffer to hold the whole line, so a corrupt log with no
+  newline was read into memory in full before being rejected — and rejected
+  permanently, since the cursor never advanced. The reader now enforces the cap
+  as it accumulates. The split function is a deliberate near-copy of
+  `bufio.ScanLines`: the default emits a trailing line that has no terminating
+  newline, which is the half-written final record an agent writes live, and
+  consuming it would treat a truncated fragment as complete.
+- **Accessibility.** `role="button"` on a sortable `<th>` overwrote its implicit
+  `columnheader` role, which cost every table on the page its column headers to
+  a screen reader and made the `aria-sort` on the same element invalid; the sort
+  control is a real button inside the heading now. The project drill-down row
+  was click-only, so its entire model and tool breakdown was unreachable by
+  keyboard; it is focusable, `Enter`/`Space` operable, and announces its state
+  through `aria-expanded`. Numeric columns were right-aligned only in the
+  activity table, leaving roughly forty columns of figures left-aligned; the
+  copy button's hover state measured 2.14:1 contrast. The session page's stat
+  cards used class names the stylesheet defines nowhere, and three colour
+  classes the template emits were undefined, so those cards rendered unstyled.
+- **The first release would not have published its container image.** The release
+  job granted `contents: write` and documented a GHCR push that needs `packages:
+  write`, which was never granted: binaries and the GitHub Release would have
+  been published, then the image push would have failed with a 403, leaving a
+  half-published tag that the workflow is configured not to retry. The release
+  footer also advertised a `docker run` line that reached nothing and mounted
+  the wrong volume path — undoing the container security default the changelog
+  records as fixed.
+- The coverage floor sat at 45% against a measured 82.8%, with a comment block
+  stale by 35–45 points and its own instruction to raise it unheeded. It is 80%
+  now, and the numbers in the comment match reality.
+
+### Added
+
+- A test that serves page loads from a real HTTP server while the scanner commits,
+  which is the only one that can check the claim justifying the process split.
+- An auth-wiring test that puts the middleware around the actual server mux rather
+  than a stub, so a route registered outside the wrapper is caught — `run()`, the
+  one place auth is applied, had no coverage at all.
+- CI now runs each fuzz target on a budget, so the parsers are exercised by inputs
+  the committed corpus does not contain; `govulncheck` and dependency updates; a
+  container build on every PR, which catches a `.dockerignore` regression that
+  would otherwise drop the price dump and silently report `$0.00` at release time.
+- A regression test for each defect above that was previously invisible: the
+  `/session` escaping, the model-filtered tool seconds, the retained project
+  across an append, the undated Antigravity step, and the DST date bound.
+
+### Changed
+
 - Ten data and money defects, each with a reproduction: `Reprice` dropped
   reasoning tokens (a 12% under-report); a resumed Codex scan dropped its first
   increment; a reported-zero Codex delta fell through to differencing and

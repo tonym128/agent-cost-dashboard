@@ -43,7 +43,7 @@ go build -o dashd ./cmd/dashd
 | `-auth-token` | none | Require `Authorization: Bearer <token>`; use it if you expose the dashboard |
 | `-interval` | `30s` | How often to scan |
 | `-home` | `$HOME` | Where to look for agent logs |
-| `-models` | next to the binary, else `./models.json` | OpenRouter price dump |
+| `-models` | next to the binary, one level above it, the working directory, or one level above that; else `./models.json` | OpenRouter price dump |
 | `-opencode` | inside `-home` | OpenCode database path |
 | `-verbose` | off | Log every request and scan detail |
 
