@@ -139,7 +139,7 @@ CI runs `go vet`, `gofmt -l` and `go test -race ./...`, and all three must be
 clean before a PR. See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout map and
 how to add a source.
 
-Around 240 tests, no external Go test dependencies — though `node` is required
+Around 260 tests, no external Go test dependencies — though `node` is required
 for the tests that execute the shipped `dashboard.js` in a sandbox, and they fail
 rather than skip when it is absent. The ones that matter most are the ones that
 guard properties invisible in a diff:

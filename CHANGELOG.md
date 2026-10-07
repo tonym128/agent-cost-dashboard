@@ -88,6 +88,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The coverage floor sat at 45% against a measured 82.8%, with a comment block
   stale by 35–45 points and its own instruction to raise it unheeded. It is 80%
   now, and the numbers in the comment match reality.
+- **Windows was never tested successfully, and the failures hid each other.**
+  The `windows-latest` job had been red for the whole life of CI, and each
+  defect stopped the job before the next could be seen. Four, in order:
+  - Without a `.gitattributes` the Windows runner checked the tree out as CRLF
+    and `gofmt` reported all 66 files as unformatted — a repository-wide
+    formatting failure that was never one. The working tree is now pinned to LF;
+    no stored file changed.
+  - PowerShell's native argument passing split
+    `-coverprofile=coverage.out` into a bare `.out`, which `go test` tried to
+    import as a package. The step now runs under bash, as the formatting step
+    already did.
+  - `TestDefaultSourcesHonoursTheHomeArgument` compared a `/home/tester` prefix
+    against roots `filepath.Join` spells with backslashes. It is about roots
+    sitting under the given home, not about which separator spells it.
+  - Two Gemini tests faked a home directory by setting `HOME` alone, which
+    `os.UserHomeDir` does not read on Windows. **The product code was already
+    correct**; the harness was resolving the real profile, finding no
+    `.project_root`, and falling back to the project directory name. A shared
+    `setFakeHome` now sets both variables.
+- The Windows-only permissions test now skips there rather than failing.
+  Windows has no Unix permission bits — every file reports `0666` whatever was
+  requested, because access is governed by ACLs — so `os.Chmod` succeeds and
+  changes nothing. Protecting the database on Windows rests on the profile
+  directory's ACL, which is outside this code.
 
 ### Added
 

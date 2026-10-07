@@ -5,6 +5,12 @@
 
 GO      ?= go
 BINARY  ?= dashd
+
+# Keep this in step with FLOOR in .github/workflows/ci.yml. They are two copies
+# because the workflow hard-codes the number in a shell step; the review's
+# finding was that the two drifted apart badly, so they are marked here rather
+# than left to look like one source.
+COVERAGE_FLOOR ?= 80.0
 PKG     := ./cmd/dashd
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -34,7 +40,7 @@ IMAGE ?= dashd:dev
 STATICCHECK_CHECKS := -checks=inherit,-U1000,-S1011
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-race cover vet fmt fmt-check lint check run scan install docker-build clean
+.PHONY: help build test test-race cover cover-check vet fmt fmt-check lint check run scan install docker-build clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -52,6 +58,14 @@ test-race: ## Run the tests under the race detector
 cover: ## Run the tests and report total coverage
 	$(GO) test -coverprofile=coverage.out ./...
 	$(GO) tool cover -func=coverage.out | tail -1
+
+cover-check: ## Fail if total coverage is below COVERAGE_FLOOR
+	@$(GO) test -coverprofile=coverage.out ./... >/dev/null
+	@total=$$($(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$$3); print $$3}'); \
+	 floor=$(COVERAGE_FLOOR); \
+	 echo "total coverage: $${total}%, floor: $${floor}%"; \
+	 awk -v t="$$total" -v f="$$floor" 'BEGIN{exit (t+0 >= f+0) ? 0 : 1}' \
+	   || { echo "::error::Coverage $${total}% is below the floor of $${floor}%"; exit 1; }
 
 vet: ## Run go vet
 	$(GO) vet ./...
@@ -71,7 +85,10 @@ lint: ## Run staticcheck
 	$(GO) run honnef.co/go/tools/cmd/staticcheck@latest $(STATICCHECK_CHECKS) ./...
 
 # The gate. This is what CI enforces and what you should run before pushing.
-check: fmt-check vet lint test ## Format check, vet, staticcheck and tests
+# It runs the tests under the race detector and enforces the coverage floor,
+# which is what CI does; `go test ./...` alone is a faster but weaker gate that
+# misses exactly the defect class -race exists to catch.
+check: fmt-check vet lint test-race cover-check ## Format, vet, staticcheck, tests under -race, coverage floor
 	@echo "ok"
 
 run: build ## Build and serve the dashboard
