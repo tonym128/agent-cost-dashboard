@@ -1,0 +1,19 @@
+# Normalise line endings in the working tree to LF on every platform.
+#
+# Every file is stored LF in the index, but without this git applies its
+# platform default on checkout — CRLF on the Windows runner — and `gofmt` reads
+# a CRLF Go file as unformatted. That made the "Check formatting" step fail on
+# all 66 files in the repository, on every run, including the first one on
+# main: the step had been red since CI was introduced and nothing noticed
+# because nothing gated on it.
+#
+# `text=auto eol=lf` fixes the checkout rather than the check, so the answer is
+# the real repository rather than a gofmt invocation that ignores CRLF.
+* text=auto eol=lf
+
+# The scripts the release and the container build copy verbatim. A CRLF shell
+# script in a Docker RUN fails with a confusing "/bin/sh^M: not found".
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
