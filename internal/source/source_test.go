@@ -825,8 +825,7 @@ func TestGeminiProjectIsRecoveredFromTheHistoryDirectory(t *testing.T) {
 	// Gemini records no working directory in the session log, so a parser that
 	// does not consult the history directory files every Gemini session under an
 	// empty project.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := setFakeHome(t)
 	project := "myproject"
 	histDir := filepath.Join(home, ".gemini", "history", project)
 	if err := os.MkdirAll(histDir, 0o755); err != nil {
@@ -860,8 +859,7 @@ func TestGeminiProjectIsRecoveredFromTheHistoryDirectory(t *testing.T) {
 func TestGeminiFallsBackToTheProjectDirectoryName(t *testing.T) {
 	// No history entry for this project: the directory name is still a better
 	// label than an empty string, which would merge every such session together.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := setFakeHome(t)
 	logPath := filepath.Join(home, ".gemini", "tmp", "no-history-here", "chats", "s.jsonl")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -1044,4 +1042,21 @@ func goHomeVariable() string {
 		return "USERPROFILE"
 	}
 	return "HOME"
+}
+
+// setFakeHome points the platform's home directory at a temporary directory,
+// and returns it.
+//
+// Both HOME and USERPROFILE are set because Go's os.UserHomeDir reads HOME on
+// Unix and USERPROFILE on Windows. Setting only HOME left the code under test
+// resolving the real home on the Windows runner, where no fixture directory
+// existed and Gemini's project attribution silently fell back to the project
+// directory name — a test that passed for the wrong reason on Linux and failed
+// for an invisible reason on Windows.
+func setFakeHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
 }

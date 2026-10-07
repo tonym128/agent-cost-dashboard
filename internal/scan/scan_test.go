@@ -1309,8 +1309,14 @@ func TestDefaultSourcesCoversEveryAgentItKnowsAbout(t *testing.T) {
 func TestDefaultSourcesHonoursTheHomeArgument(t *testing.T) {
 	for _, home := range []string{"/home/tester", "/mnt/logs", "/"} {
 		sources, openCodeDB := DefaultSources(home)
+		// Compared as forward slashes. DefaultSources builds the roots with
+		// filepath.Join, which yields backslashes on Windows, so a raw prefix
+		// check against the "/home/tester" below failed on that platform for a
+		// difference in separators alone. What this test is about is that the
+		// roots sit under the given home, not which separator spells it.
+		norm := func(p string) string { return filepath.ToSlash(p) }
 		for _, s := range sources {
-			if !strings.HasPrefix(s.Root, home) {
+			if !strings.HasPrefix(norm(s.Root), norm(home)) {
 				t.Errorf("with -home %q, %s is rooted at %q", home, s.Agent, s.Root)
 			}
 			if strings.Contains(s.Root, "~") {
@@ -1318,7 +1324,7 @@ func TestDefaultSourcesHonoursTheHomeArgument(t *testing.T) {
 					home, s.Agent, s.Root)
 			}
 		}
-		if !strings.HasPrefix(openCodeDB, home) {
+		if !strings.HasPrefix(norm(openCodeDB), norm(home)) {
 			t.Errorf("with -home %q, the OpenCode database is %q", home, openCodeDB)
 		}
 	}

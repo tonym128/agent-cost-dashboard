@@ -23,6 +23,15 @@ func modeOf(t *testing.T, path string) os.FileMode {
 }
 
 func TestNewDatabaseIsNotWorldReadable(t *testing.T) {
+	// Windows has no Unix permission bits: every file reports 0666 and every
+	// directory 0777 regardless of what was requested, because access is
+	// governed by ACLs instead. os.Chmod there succeeds and changes nothing, so
+	// the assertion below would fail on a platform where it cannot be true.
+	// What protects the database on Windows is the per-user profile directory
+	// ACL, which is outside this code's control.
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits do not exist on Windows; access is by ACL")
+	}
 	dir := filepath.Join(t.TempDir(), "nested", "share")
 	path := filepath.Join(dir, "dashd.db")
 
