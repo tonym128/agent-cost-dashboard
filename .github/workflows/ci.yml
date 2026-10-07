@@ -64,6 +64,14 @@ jobs:
           echo "gofmt: clean"
 
       - name: Test
+        # bash on every platform, including Windows. Git Bash is present on the
+        # runner and PowerShell's native argument passing mangles the
+        # `-coverprofile=coverage.out` form of a go flag: it reached `go test`
+        # as a bare `.out`, which go resolved as a package to import
+        # ("no required module provides package .out"). Build and vet pass
+        # either way, since only ./... crosses the boundary; this step is the
+        # one carrying an `=`.
+        shell: bash
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage
