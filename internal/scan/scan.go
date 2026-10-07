@@ -10,6 +10,7 @@ package scan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -67,6 +68,9 @@ type Scanner struct {
 	// and could double-append a file that grew between the two stats.
 	mu sync.Mutex
 
+	// statusMu guards lastRun and running independently of mu. Holding mu for
+	// a whole pass would otherwise stall /healthz behind a long ingest.
+	statusMu sync.Mutex
 	// lastRun is when a pass last completed, exposed for the status line.
 	lastRun time.Time
 	running bool
@@ -87,8 +91,8 @@ func New(cfg Config) *Scanner {
 func (s *Scanner) RunOnce(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.running = true
-	defer func() { s.running = false }()
+	s.setRunning(true)
+	defer s.setRunning(false)
 
 	start := s.cfg.Now()
 	s.log.Debug("scan starting",
@@ -100,13 +104,17 @@ func (s *Scanner) RunOnce(ctx context.Context) error {
 	}
 
 	changedFiles, changedSessions := 0, 0
+	var errs []error
 	for _, src := range s.cfg.Sources {
 		found, ingested, err := s.scanSource(ctx, src, states)
 		if err != nil {
 			// One broken source must not stop the others; the failure is
-			// recorded on that source's status and surfaced in the UI.
+			// recorded on that source's status and surfaced in the UI, and
+			// joined into the returned error so a cron-driven caller's exit
+			// code reflects it.
 			s.log.Error("source scan failed", "agent", src.Agent, "error", err)
 			s.recordStatus(src.Agent, found.seen, found.changed, 0, err)
+			errs = append(errs, fmt.Errorf("%s: %w", src.Agent, err))
 			continue
 		}
 		changedFiles += found.changed
@@ -119,6 +127,7 @@ func (s *Scanner) RunOnce(ctx context.Context) error {
 		if err != nil {
 			s.log.Error("opencode scan failed", "error", err)
 			s.recordStatus(model.AgentOpencode, seen, changed, ingested, err)
+			errs = append(errs, fmt.Errorf("opencode: %w", err))
 		} else {
 			s.recordStatus(model.AgentOpencode, seen, changed, ingested, nil)
 		}
@@ -133,20 +142,23 @@ func (s *Scanner) RunOnce(ctx context.Context) error {
 			"files", vanished)
 	}
 
-	s.lastRun = s.cfg.Now()
+	lastRun := s.cfg.Now()
+	s.setLastRun(lastRun)
 	// Quiet when idle. On a short interval a log line per pass buries anything
 	// that matters, and "nothing changed" is the expected case rather than an
 	// event worth reporting.
 	if changedFiles > 0 || changedSessions > 0 {
 		s.log.Info("scan ingested new activity",
-			"duration", s.lastRun.Sub(start).Round(time.Millisecond),
+			"duration", lastRun.Sub(start).Round(time.Millisecond),
 			"files_changed", changedFiles,
 			"calls_ingested", changedSessions)
 	} else {
 		s.log.Debug("scan complete",
-			"duration", s.lastRun.Sub(start).Round(time.Millisecond))
+			"duration", lastRun.Sub(start).Round(time.Millisecond))
 	}
-	return nil
+	// Surface per-source failures to the caller (cron/systemd) via the exit
+	// code, while the UI still gets the per-source detail through recordStatus.
+	return errors.Join(errs...)
 }
 
 // Run repeatedly until the context is cancelled. This is the background half of
@@ -181,9 +193,21 @@ func (s *Scanner) runOnceLogged(ctx context.Context) {
 
 // Status reports what the scanner is doing, for the status endpoint.
 func (s *Scanner) Status() (lastRun time.Time, running bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
 	return s.lastRun, s.running
+}
+
+func (s *Scanner) setRunning(v bool) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.running = v
+}
+
+func (s *Scanner) setLastRun(t time.Time) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.lastRun = t
 }
 
 // ---------------------------------------------------------------- one source

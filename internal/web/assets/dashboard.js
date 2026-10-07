@@ -453,7 +453,7 @@ function renderProjects() {
         `).join('');
 
         return `
-            <tr class="expandable-row" data-toggle-project="${rowId}">
+            <tr class="expandable-row" data-toggle-project="${rowId}" tabindex="0" aria-expanded="false">
                 <td class="project-name" title="${escapeHtml(p.name)}"><span class="expand-icon">▶</span> ${escapeHtml(shortName)}</td>
                 <td>${p.sessions}</td>
                 <td title="${formatFullNumber(p.messages)}">${formatCompactNumber(p.messages)}</td>
@@ -484,6 +484,10 @@ function toggleProjectRow(rowId, trigger) {
     const parentRow = trigger || document.querySelector('[data-toggle-project="' + rowId + '"]');
     row.classList.toggle('show');
     parentRow.classList.toggle('expanded');
+    // The disclosure is announced by aria-expanded, so a keyboard user hears
+    // the state change rather than only seeing the row open.
+    const nowExpanded = parentRow.classList.contains('expanded');
+    parentRow.setAttribute('aria-expanded', nowExpanded ? 'true' : 'false');
 }
 
 function renderSessions() {
@@ -673,6 +677,15 @@ function setupDelegatedActions() {
             toggleProjectRow(row.dataset.toggleProject, row);
         }
     });
+    // The project disclosure is a click target that a keyboard must also be
+    // able to operate. Enter and Space both activate it; Space must not scroll.
+    document.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        const row = event.target.closest('[data-toggle-project]');
+        if (!row) return;
+        event.preventDefault();
+        toggleProjectRow(row.dataset.toggleProject, row);
+    });
 }
 
 // Columns that read as ascending-first: names and dates. Everything else is a
@@ -692,15 +705,20 @@ function setupSorting(tableId, sortState, renderFn) {
             updateSortIcons(tableId, sortState);
             renderFn();
         };
-        th.addEventListener('click', activate);
-        th.setAttribute('tabindex', '0');
-        th.setAttribute('role', 'button');
-        th.addEventListener('keydown', e => {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                activate();
-            }
-        });
+        // The control is a real <button> inside the heading rather than the
+        // heading itself. Putting role="button" on a <th> overwrites its
+        // implicit columnheader role, which cost every table on the page its
+        // column headers to a screen reader, and made aria-sort invalid so the
+        // sort state stopped being announced. The button is focusable and
+        // operable by keyboard natively, so the tabindex and keydown handler
+        // the old markup needed are no longer needed either.
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'sort-btn';
+        btn.innerHTML = th.innerHTML;
+        th.innerHTML = '';
+        th.appendChild(btn);
+        btn.addEventListener('click', activate);
     });
 }
 

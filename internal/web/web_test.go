@@ -255,6 +255,39 @@ func TestUnknownSessionIsANotFoundPage(t *testing.T) {
 	}
 }
 
+// TestSessionPageEscapesOnceNotTwice guards the double-escaping fixed in
+// render.go, where sessionView and callViews pre-escaped with
+// html.EscapeString on top of html/template's own escaping.
+func TestSessionPageEscapesOnceNotTwice(t *testing.T) {
+	srv, st := newTestServer(t)
+	sess := model.SessionWrite{
+		Session: model.Session{UID: "esc", Agent: "pi", Project: "/p/<b>", Title: `A & B <tag> "q"`},
+		Path:    "/logs/esc.jsonl",
+		Calls: []model.Call{{
+			SessionUID: "esc", CallKey: "c1", Agent: "pi", Project: "/p/<b>",
+			Model: `m<&>"`, Time: time.Now(), InputTokens: 10, OutputTokens: 5,
+			TotalTokens: 15, CostUSD: 0, Priced: false,
+		}},
+	}
+	if err := st.ReplaceSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecomputeSession("esc"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := get(t, srv, "/session?uid=esc").Body.String()
+	if !strings.Contains(body, "A &amp; B &lt;tag&gt; &#34;q&#34;") {
+		t.Errorf("title is not escaped exactly once; page excerpt: %.200s", body)
+	}
+	if strings.Contains(body, "&amp;amp;") || strings.Contains(body, "&amp;lt;") {
+		t.Errorf("session page double-escapes untrusted text")
+	}
+	if !strings.Contains(body, `m&lt;&amp;&gt;&#34;`) {
+		t.Errorf("model is not escaped exactly once; page excerpt: %.200s", body)
+	}
+}
+
 func TestHealthReportsScanState(t *testing.T) {
 	srv, st := newTestServer(t)
 	seed(t, st, time.Now())
@@ -277,6 +310,31 @@ func TestHealthReportsScanState(t *testing.T) {
 	}
 	if out["last_scan"] != "2026-10-05T11:00:00Z" {
 		t.Errorf("last_scan = %v", out["last_scan"])
+	}
+}
+
+// TestHealthOmitsAnUnrunScanTime keeps the zero time out of the probe's output.
+// Before a pass has completed the scanner reports the zero time, which formats
+// as 0001-01-01T00:00:00Z — a valid-looking timestamp two thousand years in the
+// past, which anything parsing this has to special-case.
+func TestHealthOmitsAnUnrunScanTime(t *testing.T) {
+	srv, st := newTestServer(t)
+	seed(t, st, time.Now())
+	srv.ScanInfo = func() (time.Time, bool) { return time.Time{}, false }
+
+	rec := get(t, srv, "/healthz")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["last_scan"] != nil {
+		t.Errorf("last_scan = %v, want null before the first pass completes", out["last_scan"])
+	}
+	if out["ok"] != true {
+		t.Error("health does not report ok")
 	}
 }
 

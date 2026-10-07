@@ -15,7 +15,9 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -39,9 +41,22 @@ var Warn = func(msg string, args ...any) {
 	slog.Default().Warn(msg, args...)
 }
 
+// queryer is the intersection of *sql.DB and *sql.Tx used for data
+// operations. Both satisfy it, so a Store can be bound to a read transaction
+// that keeps a multi-query render on a single snapshot.
+type queryer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 // Store is a handle on the database.
 type Store struct {
 	db *sql.DB
+	q  queryer // == db, or a tx during a read snapshot
 	// Path is retained for diagnostics; empty means an in-memory database.
 	Path string
 }
@@ -94,7 +109,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(0)
 
-	s := &Store{db: db, Path: path}
+	s := &Store{db: db, q: db, Path: path}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -528,6 +543,20 @@ func (s *Store) InTx(fn func(*sql.Tx) error) error {
 	return tx.Commit()
 }
 
+// ReadTx runs fn against a transaction-bound view of the store, so a sequence
+// of read queries the web layer issues in one page load all observe the same
+// snapshot. Under WAL this does not block the writer. The transaction is
+// rolled back (there is nothing to commit) when fn returns.
+func (s *Store) ReadTx(ctx context.Context, fn func(s *Store) error) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	vs := &Store{db: s.db, q: tx, Path: s.Path}
+	return fn(vs)
+}
+
 // ---------------------------------------------------------------- ingestion
 
 // ReplaceSession rewrites everything known about one session from scratch.
@@ -566,14 +595,36 @@ func (s *Store) ReplaceSession(sess model.SessionWrite) error {
 // duplicating.
 func (s *Store) AppendSession(sess model.SessionWrite) error {
 	return s.InTx(func(tx *sql.Tx) error {
+		// An incremental append resumes past the header that carries the working
+		// directory, so the parser reports no project. Recover the stored one
+		// before writing, otherwise both the session row and the new call rows
+		// would land in an empty project bucket and split the per-project
+		// rollup. See rowProject.
+		if sess.Project == "" {
+			var known string
+			err := tx.QueryRow(
+				`SELECT project FROM session WHERE uid = ?`, sess.UID).Scan(&known)
+			switch {
+			case err == nil:
+				sess.Project = known
+			case errors.Is(err, sql.ErrNoRows):
+				// First write for this uid; nothing to inherit.
+			default:
+				return fmt.Errorf("read stored project for %s: %w", sess.UID, err)
+			}
+		}
 		if err := insertSessionRows(tx, sess); err != nil {
 			return err
 		}
 		// Make sure a session row exists even if the very first scan of this
-		// file produced no calls at all.
+		// file produced no calls at all. The project is only overwritten when
+		// this pass actually knows one, so an append that learned nothing about
+		// it cannot erase it.
 		_, err := tx.Exec(
 			`INSERT INTO session (uid, agent, project, path) VALUES (?,?,?,?)
-			 ON CONFLICT(uid) DO UPDATE SET project = excluded.project`,
+			 ON CONFLICT(uid) DO UPDATE SET
+				project = CASE WHEN excluded.project = '' THEN session.project
+				               ELSE excluded.project END`,
 			sess.UID, sess.Agent, sess.Project, sess.Path)
 		return err
 	})
@@ -590,6 +641,21 @@ func clearSession(tx *sql.Tx, uid string) error {
 		}
 	}
 	return nil
+}
+
+// rowProject picks the project for a stored row.
+//
+// An incremental append resumes past the log's header record, which is where
+// most agents carry the working directory, so the parser cannot re-derive the
+// project and reports an empty one. Writing that empty value would move the
+// session and its new calls out of their project bucket and split the
+// per-project rollup in two, so an empty per-row value falls back to the
+// session's known project instead.
+func rowProject(sessionProject, rowProject string) string {
+	if rowProject != "" {
+		return rowProject
+	}
+	return sessionProject
 }
 
 func insertSessionRows(tx *sql.Tx, sess model.SessionWrite) error {
@@ -622,7 +688,7 @@ func insertSessionRows(tx *sql.Tx, sess model.SessionWrite) error {
 			day = c.Time.Local().Format("2006-01-02")
 		}
 		if _, err := callStmt.Exec(
-			c.SessionUID, c.CallKey, c.Agent, c.Project, c.Model, ts, day,
+			c.SessionUID, c.CallKey, c.Agent, rowProject(sess.Project, c.Project), c.Model, ts, day,
 			c.InputTokens, c.OutputTokens, c.CacheReadTokens, c.CacheWriteTokens,
 			c.ReasoningTokens, c.TotalTokens, c.LLMSeconds, c.CostUSD, boolInt(c.Priced),
 		); err != nil {
@@ -647,7 +713,7 @@ func insertSessionRows(tx *sql.Tx, sess model.SessionWrite) error {
 				ts = t.Time.Unix()
 			}
 			if _, err := toolStmt.Exec(
-				t.SessionUID, t.CallKey, t.Agent, t.Project, t.Tool, ts, t.Seconds, boolInt(t.IsError),
+				t.SessionUID, t.CallKey, t.Agent, rowProject(sess.Project, t.Project), t.Tool, ts, t.Seconds, boolInt(t.IsError),
 			); err != nil {
 				return fmt.Errorf("insert tool call %s/%s: %w", t.SessionUID, t.CallKey, err)
 			}
@@ -662,7 +728,7 @@ func insertSessionRows(tx *sql.Tx, sess model.SessionWrite) error {
 // so it is correct after either ingestion path: an append leaves the old summary
 // stale, and a full read replaces it.
 func (s *Store) RecomputeSession(uid string) error {
-	_, err := s.db.Exec(`
+	_, err := s.q.Exec(`
 		UPDATE session SET
 			calls             = COALESCE((SELECT COUNT(*)  FROM call      WHERE session_uid = session.uid), 0),
 			input_tokens      = COALESCE((SELECT SUM(input_tokens)      FROM call WHERE session_uid = session.uid), 0),
@@ -688,7 +754,7 @@ func (s *Store) RecomputeSession(uid string) error {
 // RecomputeAllSessions refreshes every summary. Used after a bulk operation
 // such as repricing, where per-session updates would be N round trips.
 func (s *Store) RecomputeAllSessions() error {
-	rows, err := s.db.Query("SELECT uid FROM session")
+	rows, err := s.q.Query("SELECT uid FROM session")
 	if err != nil {
 		return err
 	}
@@ -802,7 +868,7 @@ func (s *Store) MarkOrphaned(uids []string) error {
 
 // ClearOrphaned un-flags a session, called when its log reappears.
 func (s *Store) ClearOrphaned(uid string) error {
-	_, err := s.db.Exec("UPDATE session SET orphaned = 0 WHERE uid = ?", uid)
+	_, err := s.q.Exec("UPDATE session SET orphaned = 0 WHERE uid = ?", uid)
 	return err
 }
 
@@ -828,7 +894,7 @@ func (s *Store) ForgetSession(uid string) error {
 // path. Loading them all at once keeps the scaner's per-file decision to a map
 // lookup plus a stat.
 func (s *Store) LoadScanStates() (map[string]model.ScanState, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.q.Query(`
 		SELECT path, agent, size, mtime_ns, offset, prefix_hash, prefix_len, cursor,
 		       session_uid, complete, scanned_at
 		FROM scan_state`)
@@ -857,7 +923,7 @@ func (s *Store) LoadScanStates() (map[string]model.ScanState, error) {
 
 // SaveScanState records how much of a file has been consumed.
 func (s *Store) SaveScanState(st model.ScanState) error {
-	_, err := s.db.Exec(`
+	_, err := s.q.Exec(`
 		INSERT INTO scan_state (path, agent, size, mtime_ns, offset, prefix_hash,
 		                        prefix_len, cursor, session_uid, complete, scanned_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?)
@@ -901,7 +967,7 @@ func (s *Store) RecordScanStatus(agent string, st model.ScanStatus) error {
 	if st.LastFull {
 		full = 1
 	}
-	_, err := s.db.Exec(`
+	_, err := s.q.Exec(`
 		INSERT INTO scan_status (agent, last_scan_at, last_full_at, files_seen, files_changed, calls_ingested, error)
 		VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(agent) DO UPDATE SET
@@ -917,7 +983,7 @@ func (s *Store) RecordScanStatus(agent string, st model.ScanStatus) error {
 
 // ScanStatuses returns the per-source scan state for display.
 func (s *Store) ScanStatuses() ([]model.ScanStatus, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.q.Query(`
 		SELECT agent, last_scan_at, last_full_at, files_seen, files_changed, calls_ingested, error
 		FROM scan_status ORDER BY agent`)
 	if err != nil {

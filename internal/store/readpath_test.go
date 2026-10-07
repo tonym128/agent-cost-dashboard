@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tonym128/agent-cost-dashboard/internal/model"
 )
@@ -479,4 +480,110 @@ func sessionWriteFixture(uid string, calls int) model.SessionWrite {
 		{SessionUID: uid, CallKey: "t1", Agent: "pi", Project: "/p", Tool: "read", Seconds: 2, IsError: true},
 	}
 	return sess
+}
+
+// TestAppendSessionKeepsTheProjectAnIncrementalReadCannotRecover locks the
+// fix for a session drifting out of its project bucket.
+//
+// An incremental append resumes past the log's header record, which is where
+// most agents carry the working directory, so the parser reports no project.
+// Writing that empty value moved the session and its newly-ingested calls into
+// an empty project, splitting the per-project rollup in two.
+func TestAppendSessionKeepsTheProjectAnIncrementalReadCannotRecover(t *testing.T) {
+	st, err := Open(t.TempDir() + "/f.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	// The first, full pass knows the project.
+	first := model.SessionWrite{
+		Session: model.Session{UID: "s1", Agent: "pi", Project: "/home/u/proj"},
+		Path:    "/logs/s1.jsonl",
+		Calls: []model.Call{{
+			SessionUID: "s1", CallKey: "m1", Agent: "pi", Project: "/home/u/proj",
+			Model: "m", Time: time.Now(), InputTokens: 10, OutputTokens: 5,
+			TotalTokens: 15, Priced: true, CostUSD: 0.01,
+		}},
+	}
+	if err := st.ReplaceSession(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecomputeSession("s1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The append that follows learned no project at all.
+	inc := model.SessionWrite{
+		Session: model.Session{UID: "s1", Agent: "pi"},
+		Path:    "/logs/s1.jsonl",
+		Calls: []model.Call{{
+			SessionUID: "s1", CallKey: "m2", Agent: "pi",
+			Model: "m", Time: time.Now(), InputTokens: 20, OutputTokens: 5,
+			TotalTokens: 25, Priced: true, CostUSD: 0.02,
+		}},
+	}
+	if err := st.AppendSession(inc); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecomputeSession("s1"); err != nil {
+		t.Fatal(err)
+	}
+
+	row, ok, err := st.Session(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("session vanished")
+	}
+	if row.Project != "/home/u/proj" {
+		t.Errorf("session project = %q, want /home/u/proj: an append that learned no "+
+			"project erased the stored one", row.Project)
+	}
+
+	// Both calls, not just the session row, have to stay in the project.
+	ps, err := st.Projects(ctx, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var empty int
+	for _, p := range ps {
+		if p.Project == "" {
+			empty++
+		}
+	}
+	if empty != 0 {
+		t.Errorf("%d projects have an empty name; an appended call was stored with no "+
+			"project and split the rollup", empty)
+	}
+	if len(ps) != 1 || ps[0].Project != "/home/u/proj" {
+		t.Errorf("projects = %+v, want a single /home/u/proj row holding both calls", ps)
+	}
+	if ps[0].Calls != 2 {
+		t.Errorf("project row counts %d calls, want 2", ps[0].Calls)
+	}
+
+	// The per-project model breakdown groups by the call rows' own project, so
+	// it is where an empty project on the appended call actually shows up: as
+	// the one session's spend split across two rows.
+	pm, err := st.ProjectModels(ctx, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pm) != 1 {
+		var names []string
+		for _, m := range pm {
+			names = append(names, fmt.Sprintf("%q/%s", m.Project, m.Model))
+		}
+		t.Fatalf("project models = %v, want one row; a call was stored with no project "+
+			"and split the session's spend across two", names)
+	}
+	if pm[0].Project != "/home/u/proj" {
+		t.Errorf("model breakdown project = %q, want /home/u/proj", pm[0].Project)
+	}
+	if pm[0].Calls != 2 {
+		t.Errorf("model breakdown counts %d calls, want 2", pm[0].Calls)
+	}
 }

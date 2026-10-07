@@ -108,7 +108,7 @@ func openV0(t *testing.T, path string) {
 		t.Fatalf("create v0 schema: %v", err)
 	}
 	at := fixtureAt(t)
-	st := &Store{db: db, Path: path}
+	st := &Store{db: db, q: db, Path: path}
 	for _, sess := range fixture(t, at) {
 		if err := st.ReplaceSession(sess); err != nil {
 			t.Fatalf("seed %s: %v", sess.UID, err)

@@ -126,7 +126,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.ScanInfo != nil {
 		lastRun, running := s.ScanInfo()
-		status["last_scan"] = lastRun.Format(time.RFC3339)
+		if lastRun.IsZero() {
+			// No pass has completed yet. The zero time would otherwise render
+			// as 0001-01-01T00:00:00Z, which parses as a valid timestamp two
+			// thousand years in the past.
+			status["last_scan"] = nil
+		} else {
+			status["last_scan"] = lastRun.Format(time.RFC3339)
+		}
 		status["scan_running"] = running
 	}
 	writeJSON(w, status)
@@ -214,40 +221,49 @@ type scanStatusView struct {
 }
 
 func (s *Server) buildPayload(ctx context.Context, filter store.Filter, query url.Values) (pageData, error) {
-	totals, err := s.store.Totals(ctx, filter)
-	if err != nil {
-		return pageData{}, err
-	}
-	daily, err := s.store.Daily(ctx, filter)
-	if err != nil {
-		return pageData{}, err
-	}
-	models, err := s.store.Models(ctx, filter)
-	if err != nil {
-		return pageData{}, err
-	}
-	projects, err := s.store.Projects(ctx, filter)
-	if err != nil {
-		return pageData{}, err
-	}
-	tools, err := s.store.Tools(ctx, filter)
-	if err != nil {
-		return pageData{}, err
-	}
-	sessions, err := s.store.Sessions(ctx, filter, 5000)
-	if err != nil {
-		return pageData{}, err
-	}
-	projectModels, err := s.store.ProjectModels(ctx, filter)
-	if err != nil {
-		return pageData{}, err
-	}
-	projectTools, err := s.store.ProjectTools(ctx, filter)
-	if err != nil {
-		return pageData{}, err
-	}
-	modelNames, agentNames, projectNames, minTS, maxTS, err := s.store.Facets(ctx)
-	if err != nil {
+	var totals store.Totals
+	var daily []store.DayBucket
+	var models []store.ModelStat
+	var projects []store.ProjectStat
+	var tools []store.ToolStat
+	var sessions []store.SessionRow
+	var projectModels []store.ProjectModel
+	var projectTools []store.ProjectTool
+	var modelNames, agentNames, projectNames []string
+	var minTS, maxTS int64
+
+	// The page renders eleven rollups; each must observe the same database
+	// state, so they all run inside one read transaction. Under WAL this does
+	// not block the writer, and a scan in progress cannot tear the payload.
+	if err := s.store.ReadTx(ctx, func(st *store.Store) error {
+		var err error
+		if totals, err = st.Totals(ctx, filter); err != nil {
+			return err
+		}
+		if daily, err = st.Daily(ctx, filter); err != nil {
+			return err
+		}
+		if models, err = st.Models(ctx, filter); err != nil {
+			return err
+		}
+		if projects, err = st.Projects(ctx, filter); err != nil {
+			return err
+		}
+		if tools, err = st.Tools(ctx, filter); err != nil {
+			return err
+		}
+		if sessions, err = st.Sessions(ctx, filter, 5000); err != nil {
+			return err
+		}
+		if projectModels, err = st.ProjectModels(ctx, filter); err != nil {
+			return err
+		}
+		if projectTools, err = st.ProjectTools(ctx, filter); err != nil {
+			return err
+		}
+		modelNames, agentNames, projectNames, minTS, maxTS, err = st.Facets(ctx)
+		return err
+	}); err != nil {
 		return pageData{}, err
 	}
 
@@ -437,7 +453,7 @@ func parseFilter(q url.Values) (store.Filter, filterState, error) {
 		if err != nil {
 			return filter, state, fmt.Errorf("date_to %q is not a date", state.DateTo)
 		}
-		end := t.Add(24*time.Hour - time.Second)
+		end := t.AddDate(0, 0, 1).Add(-time.Second)
 		filter.DateTo = &end
 	}
 	return filter, state, nil

@@ -2,7 +2,6 @@ package web
 
 import (
 	"fmt"
-	"html"
 	"math"
 	"time"
 
@@ -319,6 +318,7 @@ func sessionsJSON(sessions []store.SessionRow) []map[string]any {
 			"duration_display":  humanDuration(s.WallSeconds),
 			"llm_time_display":  humanDuration(s.LLMSeconds),
 			"tool_time_display": humanDuration(s.ToolSeconds),
+			"orphaned":          s.Orphaned,
 		})
 	}
 	return out
@@ -342,17 +342,18 @@ func ratio(a, b float64) float64 {
 
 func sessionView(s store.SessionRow) map[string]any {
 	return map[string]any{
-		"UID":      html.EscapeString(s.UID),
-		"Agent":    html.EscapeString(s.Agent),
-		"Project":  html.EscapeString(s.Project),
-		"Path":     html.EscapeString(s.Path),
-		"Title":    html.EscapeString(s.Title),
+		"UID":      s.UID,
+		"Agent":    s.Agent,
+		"Project":  s.Project,
+		"Path":     s.Path,
+		"Title":    s.Title,
 		"Calls":    s.Calls,
 		"Tokens":   s.TotalTokens,
 		"Cost":     fmt.Sprintf("$%.2f", s.Cost),
 		"LLMTime":  humanDuration(s.LLMSeconds),
 		"ToolTime": humanDuration(s.ToolSeconds),
 		"Wall":     humanDuration(s.WallSeconds),
+		"Orphaned": s.Orphaned,
 		"First":    formatUnix(s.FirstTS),
 		"Last":     formatUnix(s.LastTS),
 	}
@@ -363,7 +364,7 @@ func callViews(calls []store.CallRow) []map[string]any {
 	for _, c := range calls {
 		out = append(out, map[string]any{
 			"Time":       formatUnix(c.TS),
-			"Model":      html.EscapeString(c.Model),
+			"Model":      c.Model,
 			"Input":      groupInt(c.InputTokens),
 			"Output":     groupInt(c.OutputTokens),
 			"CacheRead":  groupInt(c.CacheReadTokens),

@@ -286,6 +286,8 @@ func TestEveryFilteredEntryPointAgreesOnTheSameFilter(t *testing.T) {
 		{"two agents", Filter{Agents: []string{"claude", "agy"}}},
 		{"project", Filter{Projects: []string{"/p3"}}},
 		{"two projects", Filter{Projects: []string{"/p1", "/p3"}}},
+		{"model", Filter{Models: []string{"m2"}}},
+		{"two models", Filter{Models: []string{"m1", "m2"}}},
 		{"date from", Filter{DateFrom: &cut}},
 		{"date to", Filter{DateTo: &cut}},
 		{"project and date", Filter{Projects: []string{"/p1"}, DateFrom: &cut}},
@@ -302,13 +304,6 @@ func TestEveryFilteredEntryPointAgreesOnTheSameFilter(t *testing.T) {
 				if err != nil {
 					// An error here is the failure this test exists for: the page
 					// turns one of these into an HTTP 500 while showing nothing.
-					//
-					// KNOWN RED on this branch: Tools and ProjectTools qualify
-					// their filter columns as `t.model`, and tool_call has no
-					// model column, so any ?model= filter reaches the database and
-					// comes back as "no such column: t.model". The test is written
-					// against the fixed behaviour and will go green when the
-					// query.go fix lands; see the report for the exact change.
 					t.Errorf("%s(%+v): %v", e.name, tc.f, err)
 					continue
 				}
@@ -337,6 +332,34 @@ func TestEveryFilteredEntryPointAgreesOnTheSameFilter(t *testing.T) {
 					"and both cover the same single day", tc.f, dailyCost, totals.Cost)
 			}
 		})
+	}
+}
+
+// TestTotalsToolSecondsHonoursModelFilter guards the bug where Totals silently
+// reported 0 tool-seconds whenever a model filter was set:
+// toolSeconds built its clause with where("", "ts"), which emits
+// `model IN (...)` against tool_call — a table with no model column — and the
+// error was swallowed into a confident `0`.
+func TestTotalsToolSecondsHonoursModelFilter(t *testing.T) {
+	st, done := newFilterStore(t)
+	defer done()
+	ctx := context.Background()
+
+	all, err := st.Totals(ctx, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.ToolSeconds == 0 {
+		t.Fatalf("fixture has no tool time; ToolSeconds should be non-zero, got %v", all.ToolSeconds)
+	}
+
+	oneModel, err := st.Totals(ctx, Filter{Models: []string{"m2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oneModel.ToolSeconds == 0 {
+		t.Errorf("Models=[m2]: ToolSeconds is 0; the filter should narrow to sessions "+
+			"that ran m2, which have tool calls (got %v for the unfiltered headline)", all.ToolSeconds)
 	}
 }
 

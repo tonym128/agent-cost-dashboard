@@ -217,8 +217,7 @@ func TestGeminiSessionFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := setFakeHome(t)
 	histDir := filepath.Join(home, ".gemini", "history", "example-project")
 	if err := os.MkdirAll(histDir, 0o755); err != nil {
 		t.Fatal(err)
