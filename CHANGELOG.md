@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-07
+
+The first release. Everything below was on `main` before this tag existed; the
+project had never been released, so this is the whole of its history.
+
 ### Fixed
 
 - **A model-filtered page reported `0` tool seconds.** `toolSeconds` built its
@@ -127,6 +132,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A regression test for each defect above that was previously invisible: the
   `/session` escaping, the model-filtered tool seconds, the retained project
   across an append, the undated Antigravity step, and the DST date bound.
+- Release binaries for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 and
+  windows/amd64. The build matrix had been excluding Intel Macs while the
+  comment justifying it described 32-bit Macs, which were not in the matrix at
+  all — so the contradiction shipped as a silent gap for a large share of
+  developers.
 
 ### Changed
 

@@ -32,13 +32,15 @@ builds:
       - arm64
     goarm: []
     ignore:
-      # darwin/386 and windows/arm64 are not things this tool is used on, and
-      # windows/arm64 has no meaningful users for a self-hosted dashboard.
+      # windows/arm64 has no meaningful users for a self-hosted dashboard, and
+      # 32-bit arm is long dead. Intel Macs (darwin/amd64) ARE built: this list
+      # used to exclude them while the comment above it talked about darwin/386,
+      # which this goarch list does not even contain — so the two contradicted
+      # each other, and the effect was that a large share of developers had no
+      # binary to download.
       - goos: windows
         goarch: arm64
-      - goos: darwin
-        goarch: amd64
-        goarm: "6"
+      - goarm: "6"
     # Reproducible: the mtime of every file in the archive is the commit
     # timestamp, so building the same commit twice yields identical bytes.
     mod_timestamp: "{{ .CommitTimestamp }}"
