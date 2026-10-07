@@ -116,6 +116,31 @@ changelog:
 dockers_v2:
   - id: dashd
     dockerfile: Dockerfile
+    # dockers_v2 builds the image from a staging directory holding only the
+    # release artifacts, not from the repository root. The Dockerfile compiles
+    # from source, so without these the build fails with
+    #   failed to calculate checksum of ref ...: "/go.sum": not found
+    # after the binaries and archives have already been produced — which is the
+    # worst place to discover it, because the release is half-published by then.
+    # Found by `gh workflow run release.yml`, not by CI: the container job
+    # builds from the repository root, where none of this is needed, so no
+    # pull request could ever have caught it.
+    #
+    # Directory entries, not globs: extra_files does not expand `cmd/**`, and
+    # the error is a literal "lstat cmd/**: no such file or directory".
+    #
+    # GoReleaser advises against this and suggests copying the pre-built binary
+    # instead (`COPY $TARGETPLATFORM/dashd`). That is the better shape — it
+    # would put the exact checksummed binary in the image rather than a second
+    # compilation — but it needs the Dockerfile to stop building from source,
+    # which is also what the container job tests. Keeping one Dockerfile that is
+    # exercised by CI on every push is worth the extra build step for now.
+    extra_files:
+      - go.mod
+      - go.sum
+      - cmd
+      - internal
+      - models.json
     images:
       - ghcr.io/tonym128/dashd
     tags:
