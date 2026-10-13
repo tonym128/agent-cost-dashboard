@@ -76,6 +76,13 @@ parser reads only what lies beyond the previous pass's cursor:
 | Antigravity | row id | `WHERE idx > ?` on its `steps` table |
 | OpenCode | max update time | `WHERE time_updated > ?` on messages and parts |
 
+OpenCode 2 migrated its storage into `session_v2` and `session_message` rather
+than replacing it, so an upgraded database holds both generations of tables at
+once. `dashd` reads whichever of them are present: sessions are enumerated from
+every session table, messages are read from every message table and deduplicated
+by id, and a session 2 created — which keeps its tool calls inside the message
+rather than in the part table — is read from there.
+
 Three details make this correct rather than merely fast:
 
 * **A half-written final line is never consumed.** Agents write their logs live,

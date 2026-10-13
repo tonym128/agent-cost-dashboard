@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **No OpenCode 2 session was ever ingested.** OpenCode 2 migrated its storage:
+  sessions moved from `session` to `session_v2` and messages from `message` to
+  `session_message`, with the role moved out of the JSON blob and into a column.
+  The migration *copies* rather than replaces, so an upgraded database holds both
+  generations at once — and `dashd` read only the old ones. It did not fail: the
+  old tables are still there and still full, so the pass reported a complete,
+  plausible, understated answer with nothing anywhere saying that every session
+  created since the upgrade was missing. On one real database that was 10
+  sessions, 1000 calls and 1124 tool calls absent. Sessions are now enumerated
+  from every session table present, messages are read from every message table
+  and deduplicated by id (the migration left messages behind in the old table as
+  well as copying them forward, so neither table alone is complete), the model is
+  read out of the object 2.x writes rather than the flat id 1.x wrote, and the
+  per-message model now wins over the session's, since 2.x records a model switch
+  as a message of its own.
+- **Every OpenCode 2 tool call was invisible.** A session 2 created keeps no rows
+  in the `part` table at all — its tool calls are entries in the message's own
+  content array — so the tool columns read empty for exactly the sessions the
+  model now counts. Tools are read from there when a message has no parts, and
+  from the parts when it has them, which is what stops a migrated session, whose
+  tool call is stored in both places, from being counted twice.
+- **`-opencode` was parsed and then discarded.** The flag's value was never
+  passed to the scanner, which was built from the default location under `-home`
+  instead. A user pointing it at a database elsewhere — `XDG_DATA_HOME`, a
+  second install — got an empty OpenCode panel and no indication that the file
+  they had named was never opened.
+- **An OpenCode tool row was overwritten by the next scan pass.** Tool calls were
+  keyed by their position in the batch, which restarts at zero on every
+  incremental pass, so each increment replaced the session's first tool row
+  rather than adding to it. A session still being worked on therefore reported
+  fewer tool calls and less tool time than it had made. They are keyed by the
+  part's own id, or by the message and call id for an inline tool call.
+- **The Copy button handed OpenCode users `opencode --session ''`.** An OpenCode
+  session has no transcript file, so the path the command was built from is
+  always empty; OpenCode resumes by session id, and that is what it is now given.
+
 ## [0.1.0] - 2026-10-07
 
 The first release. Everything below was on `main` before this tag existed; the

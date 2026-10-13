@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,56 @@ func TestJSResumeCommandIsQuotedForSh(t *testing.T) {
 			t.Errorf("buildResumeCmd does not quote %s", call)
 		}
 	}
+}
+
+// TestJSResumeCommandForOpenCodeNamesTheSessionId runs the shipped script.
+//
+// OpenCode is the one agent with no transcript file: every session is a row in
+// one shared database, so the store has no path to give it and the session's
+// path is empty. OpenCode's own CLI resumes by session id (`--session, -s`), so
+// the command built from the path was `opencode --session ”` — a command that
+// names no session, handed to the user by a button the dashboard vouches for.
+func TestJSResumeCommandForOpenCodeNamesTheSessionId(t *testing.T) {
+	const uid = "ses_01HQ8XYZ0000000000000001"
+	var got string
+	runDashboardJS(t,
+		jsConfig{Ids: templateIDs(t), Data: sentinelPayload()},
+		`async () => buildResumeCmd('opencode', '/home/testuser/project', '', `+quoteJS(uid)+`)`,
+		&got)
+	// The agent name is quoted too: it is a command position, and the script
+	// quotes every value it interpolates.
+	want := "cd '/home/testuser/project' && 'opencode' --session '" + uid + "'"
+	if got != want {
+		t.Errorf("resume command = %q, want %q; an OpenCode session has no path, so "+
+			"the id is the only thing that can resume it", got, want)
+	}
+
+	// The other agents keep the value they had: a change here must not quietly
+	// change what the Copy button produces for the five sources that worked.
+	for _, tc := range []struct{ agent, want string }{
+		{"claude", "cd '/w' && 'claude' --resume '" + uid + "'"},
+		{"codex", "cd '/w' && 'codex' --resume '" + uid + "'"},
+		{"agy", "cd '/w' && 'agy' --conversation '" + uid + "'"},
+		{"pi", "cd '/w' && 'pi' --session '/logs/u1.jsonl'"},
+	} {
+		var out string
+		runDashboardJS(t,
+			jsConfig{Ids: templateIDs(t), Data: sentinelPayload()},
+			`async () => buildResumeCmd(`+quoteJS(tc.agent)+`, '/w', '/logs/u1.jsonl', `+quoteJS(uid)+`)`,
+			&out)
+		if out != tc.want {
+			t.Errorf("resume command for %s = %q, want %q", tc.agent, out, tc.want)
+		}
+	}
+}
+
+// quoteJS renders a Go string as a JavaScript string literal.
+func quoteJS(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 // agentCmd is the one value buildResumeCmd takes that is not log-derived: it is

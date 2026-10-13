@@ -1,0 +1,153 @@
+{
+  "comment": "Sanitised OpenCode 2 fixture. Shapes copied from a real opencode.db after the 2.x storage migration (session_v2 / session_message, with the message type in a column rather than in the blob, and tool calls inside the message's content array instead of in the part table). Every value invented. Built into a SQLite file by buildOpenCodeV2DB in fixture_sqlite_test.go, so the schema the parser reads is visible in code rather than hidden in a binary blob. The third session is the transitional one: a session that exists in both the old and the new tables, with its messages in both and one message the migration left behind in the old table only.",
+  "sessions": [
+    {
+      "id": "ses_v2test000000001",
+      "directory": "/home/testuser/project",
+      "title": "The 2.x tables are not read by a 1.x reader",
+      "agent": "build",
+      "model": "{\"id\":\"claude-sonnet-4-6\",\"providerID\":\"anthropic\"}",
+      "version": "2.0.26",
+      "time_created": 1779976500000,
+      "time_updated": 1779976505000,
+      "messages": [
+        {
+          "id": "msg_v2user00000001",
+          "type": "user",
+          "seq": 1,
+          "time_created": 1779976500100,
+          "time_updated": 1779976500100,
+          "data": {"time": {"created": 1779976500100},
+                   "content": [{"type": "text", "text": "Read the 2.x tables."}]}
+        },
+        {
+          "id": "msg_v2asst00000001",
+          "type": "assistant",
+          "seq": 2,
+          "time_created": 1779976501000,
+          "time_updated": 1779976505000,
+          "data": {"agent": "build", "cost": 0,
+                   "model": {"id": "claude-sonnet-4-6", "providerID": "anthropic", "variant": "high"},
+                   "tokens": {"input": 12000, "output": 900, "reasoning": 400,
+                              "cache": {"read": 30000, "write": 0}},
+                   "time": {"created": 1779976501000, "streamed": 1779976503000,
+                            "completed": 1779976504900},
+                   "finish": "stop",
+                   "content": [
+                     {"type": "text", "text": "Both message tables were being read."},
+                     {"type": "tool", "id": "call_v2_0001", "name": "bash", "executed": true,
+                      "state": {"status": "completed", "input": {"command": "go test ./..."},
+                                "metadata": {"exit": 0}},
+                      "time": {"created": 1779976502000, "completed": 1779976502600}}
+                   ]}
+        }
+      ]
+    },
+    {
+      "id": "ses_v2test000000002",
+      "directory": "/home/testuser/v2-project",
+      "title": "",
+      "agent": "plan",
+      "model": "claude-opus-4-8",
+      "version": "2.0.26",
+      "time_created": 1779976600000,
+      "time_updated": 1779976690000,
+      "messages": [
+        {
+          "id": "msg_v2asst00000002",
+          "type": "assistant",
+          "seq": 1,
+          "time_created": 1779976601000,
+          "time_updated": 1779976609000,
+          "data": {"agent": "plan", "cost": 0,
+                   "model": {"id": "claude-opus-4-8"},
+                   "tokens": {"input": 5000, "output": 200, "reasoning": 100,
+                              "cache": {"read": 0, "write": 500}},
+                   "time": {"created": 1779976601000, "completed": 1779976608500},
+                   "content": [
+                     {"type": "tool", "id": "call_v2_0002", "name": "invalid", "executed": true,
+                      "state": {"status": "error", "error": "could not parse input",
+                                "input": {"tool": "read", "filePath": "/home/testuser/v2-project/go.mod"}},
+                      "time": {"created": 1779976602000, "completed": 1779976602500}}
+                   ]}
+        },
+        {
+          "id": "msg_v2asst00000003",
+          "type": "assistant",
+          "seq": 2,
+          "time_created": 1779976610000,
+          "time_updated": 1779976610000,
+          "data": {"agent": "plan", "time": {"created": 1779976610000},
+                   "content": [{"type": "text", "text": "An assistant turn that never reached the model."}]}
+        },
+        {
+          "id": "msg_v2system0000001",
+          "type": "system",
+          "seq": 3,
+          "time_created": 1779976615000,
+          "time_updated": 1779976615000,
+          "data": {"text": "The available tools have changed."}
+        }
+      ]
+    },
+    {
+      "id": "ses_migratedtest0001",
+      "directory": "/home/testuser/migrated",
+      "title": "Migrated: one session, both tables",
+      "agent": "build",
+      "model": "{\"id\":\"claude-sonnet-4-6\",\"providerID\":\"anthropic\"}",
+      "version": "1.18.35",
+      "also_in_v1": true,
+      "time_created": 1779976700000,
+      "time_updated": 1779976709000,
+      "messages": [
+        {
+          "id": "msg_migasst00000001",
+          "type": "assistant",
+          "seq": 1,
+          "time_created": 1779976701000,
+          "time_updated": 1779976709000,
+          "data": {"agent": "build", "cost": 0,
+                   "model": {"id": "claude-sonnet-4-6", "providerID": "anthropic"},
+                   "tokens": {"input": 1000, "output": 100, "reasoning": 50,
+                              "cache": {"read": 0, "write": 0}},
+                   "time": {"created": 1779976701000, "completed": 1779976708500},
+                   "content": [
+                     {"type": "tool", "id": "call_mig_0001", "name": "read", "executed": true,
+                      "state": {"status": "completed", "input": {"filePath": "/home/testuser/migrated/go.mod"}},
+                      "time": {"created": 1779976702000, "completed": 1779976702400}}
+                   ]},
+          "parts": [
+            {"type": "tool", "callID": "call_mig_0001", "tool": "read",
+             "state": {"status": "completed", "input": {"filePath": "/home/testuser/migrated/go.mod"},
+                       "time": {"start": 1779976702000, "end": 1779976702400}}}
+          ]
+        }
+      ],
+      "v1_only_messages": [
+        {
+          "id": "msg_migonly0000001",
+          "time_created": 1779976705000,
+          "time_updated": 1779976705500,
+          "data": {"role": "assistant", "agent": "build", "cost": 0,
+                   "modelID": "claude-sonnet-4-6", "providerID": "anthropic",
+                   "tokens": {"input": 700, "output": 70, "reasoning": 0,
+                              "cache": {"read": 0, "write": 0}},
+                   "time": {"created": 1779976705000, "completed": 1779976705500}}
+        }
+      ]
+    },
+    {
+      "id": "ses_v2child00000001",
+      "parent_id": "ses_v2test000000001",
+      "directory": "/home/testuser/project",
+      "title": "A subagent of the first session",
+      "agent": "build",
+      "model": "claude-sonnet-4-6",
+      "version": "2.0.26",
+      "time_created": 1779976800000,
+      "time_updated": 1779976801000,
+      "messages": []
+    }
+  ]
+}

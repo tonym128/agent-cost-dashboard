@@ -400,26 +400,20 @@ func (s *Scanner) scanOpenCode(ctx context.Context, states map[string]model.Scan
 	return seen, changed, ingested, nil
 }
 
+// openCodeSessionIDs lists the sessions a pass should consider.
+//
+// It reads whichever session tables the database holds, because OpenCode 2
+// migrated into `session_v2` and copies rather than moves: a session created
+// since the upgrade exists only there. Enumerating `session` alone reported a
+// clean, plausible, understated set of sessions — every OpenCode 2 session was
+// simply absent from the dashboard, with nothing in the status line to say so.
 func openCodeSessionIDs(dbPath string) ([]string, error) {
 	db, err := source.OpenReadOnly(dbPath)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
-	rows, err := db.Query("SELECT id FROM session WHERE parent_id IS NULL OR parent_id = '' ORDER BY time_created")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
+	return source.OpenCodeSessionIDs(db)
 }
 
 // ---------------------------------------------------------------- discovery

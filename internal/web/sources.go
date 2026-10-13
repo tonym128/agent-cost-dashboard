@@ -27,12 +27,13 @@ import (
 // sourceNote is why a miss in one agent's log location is usually not a dashd
 // bug. It is the only thing the panel knows that the scanner does not.
 var sourceNote = map[string]string{
-	model.AgentPi:       "pi writes one JSONL file per session.",
-	model.AgentClaude:   "One directory per project, one JSONL file per session.",
-	model.AgentCodex:    "JSONL, sharded by date.",
-	model.AgentGemini:   "JSONL under the agent's own directory.",
-	model.AgentAgy:      "SQLite rather than JSONL, so a missing file simply yields no rows.",
-	model.AgentOpencode: "A single SQLite database holds every session.",
+	model.AgentPi:     "pi writes one JSONL file per session.",
+	model.AgentClaude: "One directory per project, one JSONL file per session.",
+	model.AgentCodex:  "JSONL, sharded by date.",
+	model.AgentGemini: "JSONL under the agent's own directory.",
+	model.AgentAgy:    "SQLite rather than JSONL, so a missing file simply yields no rows.",
+	model.AgentOpencode: "One SQLite database holds every session, across both the " +
+		"1.x and the 2.x tables.",
 }
 
 // knownSources is the set of agents this build can read, with the log location

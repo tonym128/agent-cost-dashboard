@@ -74,9 +74,6 @@ func run(o options, command string, stdout io.Writer) error {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	log.Info("starting", "version", version, "commit", commit, "date", date, "command", command)
-	if o.opencode == "" {
-		o.opencode = filepath.Join(o.home, ".local/share/opencode/opencode.db")
-	}
 
 	// The store reports a database it could not chmod 0600 through this hook,
 	// rather than failing: a filesystem without permission bits should not stop
@@ -101,6 +98,14 @@ func run(o options, command string, stdout io.Writer) error {
 	warnIfFallbackOnly(pricer, o.models, log)
 
 	sources, openCodeDB := scan.DefaultSources(o.home)
+	// The flag wins over the location under -home. It used to be read here and
+	// then thrown away, so a user pointing -opencode at a database elsewhere —
+	// XDG_DATA_HOME, a second install, a copy kept for a colleague — scanned the
+	// default path instead and was shown an empty OpenCode panel with nothing to
+	// indicate that the database they named had never been opened.
+	if o.opencode != "" {
+		openCodeDB = o.opencode
+	}
 	scanner := scan.New(scan.Config{
 		Store:      st,
 		Pricer:     pricer,

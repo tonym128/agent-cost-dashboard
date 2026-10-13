@@ -152,6 +152,150 @@ func partID(messageID string, i int) string {
 	return "prt_" + messageID + "_" + string(rune('a'+i))
 }
 
+// ---------------------------------------------------------------- OpenCode 2
+
+// openCodeV2Fixture is a session as OpenCode 2 stores it.
+//
+// The differences from openCodeFixture are all deliberate and all are what the
+// 2.x migration changed: sessions live in `session_v2`, messages in
+// `session_message` with the type in a column of its own, the model is an object
+// rather than a flat id, and a tool call is an entry in the message's own
+// content array rather than a row in the part table. A session can also still be
+// present in the 1.x tables, because the migration copied rather than moved.
+type openCodeV2Fixture struct {
+	Sessions []struct {
+		ID          string `json:"id"`
+		Directory   string `json:"directory"`
+		Title       string `json:"title"`
+		Agent       string `json:"agent"`
+		Model       string `json:"model"`
+		Version     string `json:"version"`
+		TimeCreated int64  `json:"time_created"`
+		TimeUpdated int64  `json:"time_updated"`
+		// AlsoInV1 writes the session into the 1.x `session` table as well,
+		// which is what an upgraded install looks like.
+		AlsoInV1 bool `json:"also_in_v1"`
+		// ParentID marks a child session, whose messages belong to the parent's
+		// conversation and must not be ingested as a session of its own.
+		ParentID string `json:"parent_id"`
+		Messages []struct {
+			ID          string `json:"id"`
+			Type        string `json:"type"`
+			Seq         int64  `json:"seq"`
+			TimeCreated int64  `json:"time_created"`
+			TimeUpdated int64  `json:"time_updated"`
+			DataRaw     any    `json:"data"`
+			// Parts are the 1.x representation. A migrated session has them
+			// alongside the inline tool calls; a session 2 created has none.
+			Parts []any `json:"parts"`
+		} `json:"messages"`
+		// V1OnlyMessages are rows the migration left behind in the old table:
+		// the parser has to read both to see them.
+		V1OnlyMessages []struct {
+			ID          string `json:"id"`
+			TimeCreated int64  `json:"time_created"`
+			TimeUpdated int64  `json:"time_updated"`
+			DataRaw     any    `json:"data"`
+		} `json:"v1_only_messages"`
+	} `json:"sessions"`
+}
+
+// buildOpenCodeV2DB writes the 2.x fixture as the database the parser reads and
+// returns its path.
+//
+// Every table is created, including the 1.x ones, because that is what a real
+// upgraded install contains: both shapes present at once. A database holding only
+// the 2.x tables, and one holding only the 1.x tables, are both covered by
+// callers that drop what they do not need.
+func buildOpenCodeV2DB(t *testing.T) string {
+	t.Helper()
+	var fx openCodeV2Fixture
+	readFixture(t, "opencode/opencode_v2_sessions.json", &fx)
+
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Only the columns the parser reads, in both shapes, as in buildOpenCodeDB.
+	// parent_id is in both session tables because both the parser and OpenCode
+	// use it to tell a session from one of its subagents.
+	sessionCols := `(id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT,
+	                 agent TEXT, model TEXT, time_created INTEGER, time_updated INTEGER)`
+	for _, s := range []string{
+		`CREATE TABLE session ` + sessionCols,
+		`CREATE TABLE session_v2 ` + sessionCols,
+		`CREATE TABLE message (
+			id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+			time_updated INTEGER, data TEXT)`,
+		`CREATE TABLE session_message (
+			id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+			time_created INTEGER, time_updated INTEGER, data TEXT)`,
+		`CREATE TABLE part (
+			id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+			time_created INTEGER, time_updated INTEGER, data TEXT)`,
+	} {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("create schema: %v", err)
+		}
+	}
+
+	insertSession := func(table, id, parent, directory, title, agent, model string, created, updated int64) {
+		if _, err := db.Exec(
+			`INSERT INTO `+table+` (id, parent_id, directory, title, agent, model, time_created, time_updated)
+			 VALUES (?,?,?,?,?,?,?,?)`,
+			id, parent, directory, title, agent, model, created, updated); err != nil {
+			t.Fatalf("insert into %s: %v", table, err)
+		}
+	}
+
+	for _, s := range fx.Sessions {
+		insertSession("session_v2", s.ID, s.ParentID, s.Directory, s.Title, s.Agent, s.Model, s.TimeCreated, s.TimeUpdated)
+		if s.AlsoInV1 {
+			insertSession("session", s.ID, s.ParentID, s.Directory, s.Title, s.Agent, s.Model, s.TimeCreated, s.TimeUpdated)
+		}
+		for _, m := range s.Messages {
+			data, err := json.Marshal(m.DataRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(
+				`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+				 VALUES (?,?,?,?,?,?,?)`,
+				m.ID, s.ID, m.Type, m.Seq, m.TimeCreated, m.TimeUpdated, string(data)); err != nil {
+				t.Fatalf("insert session_message: %v", err)
+			}
+			for pi, p := range m.Parts {
+				raw, err := json.Marshal(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Exec(
+					`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+					 VALUES (?,?,?,?,?,?)`,
+					partID(m.ID, pi), m.ID, s.ID, m.TimeUpdated, m.TimeUpdated, string(raw)); err != nil {
+					t.Fatalf("insert part: %v", err)
+				}
+			}
+		}
+		for _, m := range s.V1OnlyMessages {
+			data, err := json.Marshal(m.DataRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(
+				`INSERT INTO message (id, session_id, time_created, time_updated, data)
+				 VALUES (?,?,?,?,?)`,
+				m.ID, s.ID, m.TimeCreated, m.TimeUpdated, string(data)); err != nil {
+				t.Fatalf("insert message: %v", err)
+			}
+		}
+	}
+	return path
+}
+
 // ---------------------------------------------------------------- Antigravity
 
 type antigravityFixture struct {

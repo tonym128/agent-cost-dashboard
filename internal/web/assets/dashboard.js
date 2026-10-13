@@ -252,6 +252,12 @@ function buildResumeCmd(agentCmd, cwd, sessionPath, sessionUid) {
         return 'cd ' + cwdArg + ' && ' + shQuote('codex') + ' --resume ' + shQuote(sessionUid);
     } else if (agentCmd === 'agy') {
         return 'cd ' + cwdArg + ' && ' + shQuote('agy') + ' --conversation ' + shQuote(sessionUid);
+    } else if (agentCmd === 'opencode') {
+        // OpenCode keeps every session in one database rather than in a
+        // transcript file, so there is no path to hand it: it resumes by session
+        // id. Passing the path — which is empty for every OpenCode session —
+        // produced `opencode --session ''`, a command that names no session.
+        return 'cd ' + cwdArg + ' && ' + shQuote('opencode') + ' --session ' + shQuote(sessionUid);
     } else {
         return 'cd ' + cwdArg + ' && ' + shQuote(agentCmd) +
             ' --session ' + shQuote(sessionPath);
