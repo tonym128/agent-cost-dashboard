@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-19
+
+Every change here is a fix, but the database migrates one way: the first start
+takes it to schema version 5, and a 0.1.0 binary refuses to open it after that.
+Back up `dashboard.db` first if you might want to go back.
+
+Upgrading:
+
+- The migration drops Claude Code's scan cursors, so the first pass re-reads
+  every Claude log from the start. That is what rebuilds Claude calls under the
+  corrected keys; it is expected, and it happens once.
+- Stored costs are not recomputed on their own. Run `dashd reprice` after
+  upgrading, and again whenever you refresh `models.json`, to apply the pricing
+  fixes below to calls already in the database.
+
 ### Fixed
 
 - **No OpenCode 2 session was ever ingested.** OpenCode 2 migrated its storage:
