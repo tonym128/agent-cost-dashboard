@@ -41,6 +41,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than adding to it. A session still being worked on therefore reported
   fewer tool calls and less tool time than it had made. They are keyed by the
   part's own id, or by the message and call id for an inline tool call.
+- **Every OpenCode subagent session was dropped.** Child sessions were filtered
+  out on the belief that their messages were already in the parent's. They are
+  not: a subagent's messages are filed under its own session id, and neither the
+  parent's messages nor its totals include them. On one real database that was
+  3 of 10 sessions, including the largest — 489 calls and 23M cache-read tokens.
+  Child sessions are now ingested like any other.
+- **Claude Code calls were counted once per content block.** Claude Code writes
+  each block of a response — thinking, text, each tool call — as a line of its
+  own, every one repeating the response's full usage, and calls were keyed by
+  line. A real log of 83 responses stored 169 calls and roughly twice the true
+  tokens and cost. Calls are now keyed by the API message id, with the lines of
+  one response folded into one call. A schema step (v4) drops the stored Claude
+  scan cursors so each log is re-read once and its rows rebuilt.
+- **Every Claude Code tool call was stored twice.** The tool_use made one row and
+  its tool_result a second, unnamed `tool` row carrying the error flag, both
+  keyed by position in the batch. The result now completes its tool_use's row,
+  keyed by the tool_use id, which also gives Claude tool calls a duration. The
+  fixture that should have caught this had a tool_result line that was not
+  valid JSON, so it was never read.
+- **`models.json` refreshed**, so Claude 5 models are priced rather than reported
+  as unpriced.
 - **The Copy button handed OpenCode users `opencode --session ''`.** An OpenCode
   session has no transcript file, so the path the command was built from is
   always empty; OpenCode resumes by session id, and that is what it is now given.

@@ -126,7 +126,7 @@ func openCodeV2FixtureDB(t *testing.T) string {
 		t.Fatal(err)
 	}
 
-	// The child session's messages belong to its parent's transcript.
+	// A subagent's messages are filed under its own session, not the parent's.
 	if _, err := db.Exec(
 		`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
 		 VALUES (?,?,?,?,?,?,?)`,
@@ -155,17 +155,17 @@ func TestScanOpenCodeIngestsBothStorageShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Two sessions: the 2.x-only one and the migrated one. The child session is
-	// not one of them, and neither is the 2.x table's absence of a `session`
-	// counterpart for the first.
-	if totals.Sessions != 2 {
-		t.Errorf("stored %d sessions, want 2 (one 2.x-only, one migrated); OpenCode 2 "+
-			"sessions were invisible while this passed", totals.Sessions)
+	// Three sessions: the 2.x-only one, the migrated one, and the subagent
+	// session under it.
+	if totals.Sessions != 3 {
+		t.Errorf("stored %d sessions, want 3 (one 2.x-only, one migrated, one child); "+
+			"OpenCode 2 sessions were invisible while this passed", totals.Sessions)
 	}
-	// Three calls: the 2.x message, the migrated message present in both tables
-	// (one call, not two), and the message left behind in the old table.
-	if totals.Calls != 3 {
-		t.Errorf("stored %d calls, want 3; a message in both message tables must be "+
+	// Four calls: the 2.x message, the migrated message present in both tables
+	// (one call, not two), the message left behind in the old table, and the
+	// subagent's.
+	if totals.Calls != 4 {
+		t.Errorf("stored %d calls, want 4; a message in both message tables must be "+
 			"counted once and a message only in the old table must not be dropped", totals.Calls)
 	}
 	// The 2.x message's own model, read out of the object 2.x writes.
@@ -185,16 +185,16 @@ func TestScanOpenCodeIngestsBothStorageShapes(t *testing.T) {
 	}
 
 	// The child session is a real session with a real message in it, filed under
-	// the same project as the migrated session. Ingesting it would put the
-	// subagent's 999 input tokens and its call in the dashboard a second time.
+	// the same project as the migrated session. The parent's messages do not
+	// include it, so skipping it would drop the subagent's 999 input tokens.
 	projectTotals, err := st.Totals(ctx, store.Filter{Projects: []string{"/home/testuser/project"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if projectTotals.Calls != 2 || projectTotals.InputTokens != 17 {
-		t.Errorf("the shared project holds %d calls / %d input tokens, want 2 / 17: "+
-			"the child session's message belongs to its parent's transcript",
-			projectTotals.Calls, projectTotals.InputTokens)
+	if projectTotals.Calls != 3 || projectTotals.InputTokens != 17+999 {
+		t.Errorf("the shared project holds %d calls / %d input tokens, want 3 / %d: "+
+			"a subagent's usage is recorded only in its own session",
+			projectTotals.Calls, projectTotals.InputTokens, 17+999)
 	}
 }
 

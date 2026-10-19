@@ -388,6 +388,7 @@ func TestOpenCodeSessionIDsCoverBothShapes(t *testing.T) {
 		"ses_v2test000000001",  // 2.x only
 		"ses_v2test000000002",  // 2.x only
 		"ses_migratedtest0001", // both, and so listed once
+		"ses_v2child00000001",  // a subagent, whose calls are in no other session
 	}
 	if len(ids) != len(want) {
 		t.Fatalf("OpenCodeSessionIDs = %v, want %d ids %v", ids, len(want), want)
@@ -395,13 +396,6 @@ func TestOpenCodeSessionIDsCoverBothShapes(t *testing.T) {
 	for i, id := range want {
 		if ids[i] != id {
 			t.Errorf("id %d = %q, want %q (order is by creation time)", i, ids[i], id)
-		}
-	}
-	// A child session's messages belong to its parent's conversation. Listing
-	// one as a session of its own ingests the same calls twice.
-	for _, id := range ids {
-		if id == "ses_v2child00000001" {
-			t.Error("a child session was returned as a session of its own")
 		}
 	}
 }

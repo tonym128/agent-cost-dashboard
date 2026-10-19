@@ -992,14 +992,13 @@ func openCodeFixtureDB(t *testing.T) string {
 	return path
 }
 
-// TestOpenCodeSessionIDsReturnsOnlyTopLevelSessions covers the query the scanner
-// runs before parsing anything.
+// TestOpenCodeSessionIDsIncludesChildSessions covers the query the scanner runs
+// before parsing anything.
 //
-// OpenCode nests child sessions under a parent, and ingesting a child as a
-// top-level session would produce a duplicate: the child's messages are part of
-// the parent's transcript. The filter is `parent_id IS NULL OR parent_id = ”`,
-// and this is the first time it has been executed.
-func TestOpenCodeSessionIDsReturnsOnlyTopLevelSessions(t *testing.T) {
+// OpenCode nests a subagent's session under its parent, but the subagent's
+// messages are filed under its own id and appear nowhere in the parent's, so a
+// child has to be listed like any other session or its usage is lost.
+func TestOpenCodeSessionIDsIncludesChildSessions(t *testing.T) {
 	path := openCodeFixtureDB(t)
 
 	ids, err := openCodeSessionIDs(path)
@@ -1013,12 +1012,12 @@ func TestOpenCodeSessionIDsReturnsOnlyTopLevelSessions(t *testing.T) {
 	if !seen["ses_top0000000001"] || !seen["ses_top0000000002"] {
 		t.Errorf("openCodeSessionIDs returned %v, want both top-level sessions", ids)
 	}
-	if seen["ses_child00000001"] {
-		t.Error("openCodeSessionIDs returned a child session: its messages belong to " +
-			"its parent's transcript, so ingesting it separately double-counts them")
+	if !seen["ses_child00000001"] {
+		t.Error("openCodeSessionIDs left out a child session: its messages are in " +
+			"no other session, so its usage was dropped")
 	}
-	if len(ids) != 2 {
-		t.Errorf("openCodeSessionIDs returned %d sessions, want 2", len(ids))
+	if len(ids) != 3 {
+		t.Errorf("openCodeSessionIDs returned %d sessions, want 3", len(ids))
 	}
 
 	// A missing database is the "not installed" case, which the caller treats as

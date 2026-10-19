@@ -175,8 +175,8 @@ type openCodeV2Fixture struct {
 		// AlsoInV1 writes the session into the 1.x `session` table as well,
 		// which is what an upgraded install looks like.
 		AlsoInV1 bool `json:"also_in_v1"`
-		// ParentID marks a child session, whose messages belong to the parent's
-		// conversation and must not be ingested as a session of its own.
+		// ParentID marks a child (subagent) session. Its messages are its own and
+		// it is ingested like any other session.
 		ParentID string `json:"parent_id"`
 		Messages []struct {
 			ID          string `json:"id"`

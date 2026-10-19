@@ -488,12 +488,16 @@ func (p *OpenCodeParser) ParseAll(ids []string, prev map[string]model.ScanState,
 	return sessions, states, nil
 }
 
-// OpenCodeSessionIDs lists the ids of every top-level session in an OpenCode
-// database, from every session table it holds.
+// OpenCodeSessionIDs lists the ids of every session in an OpenCode database,
+// from every session table it holds.
 //
-// Child sessions are excluded: a subagent's messages belong to its parent's
-// conversation, and ingesting them as sessions of their own would count the same
-// calls twice.
+// Child sessions are included. A subagent runs in a session of its own and its
+// messages are filed under that session's id, not the parent's: the parent holds
+// only the tool call that spawned it, and neither its messages nor its totals
+// include the child's usage. Filtering children out, as this once did on the
+// belief that they duplicated the parent, silently dropped every subagent call —
+// on one real database three of ten sessions and the largest of them, 465 calls
+// and 22M cache-read tokens.
 func OpenCodeSessionIDs(db *sql.DB) ([]string, error) {
 	layout, err := openCodeLayoutOf(db)
 	if err != nil {
@@ -506,8 +510,7 @@ func OpenCodeSessionIDs(db *sql.DB) ([]string, error) {
 	for _, table := range layout.sessions {
 		// The table name is one of the two constants above, never anything read
 		// from the database, so interpolating it cannot inject SQL.
-		rows, err := db.Query(`SELECT id FROM ` + table +
-			` WHERE parent_id IS NULL OR parent_id = '' ORDER BY time_created, id`)
+		rows, err := db.Query(`SELECT id FROM ` + table + ` ORDER BY time_created, id`)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", table, err)
 		}

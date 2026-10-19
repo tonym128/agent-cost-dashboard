@@ -404,6 +404,7 @@ var migrations = []migration{
 		apply:   execScript(v2RollupIndexes),
 	},
 	v3DropPrefixIndexes,
+	v4ResetClaude,
 }
 
 // execScript turns a multi-statement script into a migration step.
@@ -701,7 +702,10 @@ func insertSessionRows(tx *sql.Tx, sess model.SessionWrite) error {
 			INSERT INTO tool_call (session_uid, call_key, agent, project, tool, ts, seconds, is_error)
 			VALUES (?,?,?,?,?,?,?,?)
 			ON CONFLICT(session_uid, call_key) DO UPDATE SET
-				tool = excluded.tool, ts = excluded.ts,
+				-- An empty name is a tool result whose tool_use an earlier pass
+				-- stored; it completes that row and keeps its name.
+				tool = CASE WHEN excluded.tool = '' THEN tool_call.tool ELSE excluded.tool END,
+				ts = excluded.ts,
 				seconds = excluded.seconds, is_error = excluded.is_error`)
 		if err != nil {
 			return err

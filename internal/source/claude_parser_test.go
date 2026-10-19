@@ -2,6 +2,8 @@ package source
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tonym128/agent-cost-dashboard/internal/model"
@@ -163,8 +165,8 @@ func TestClaudeSessionFixture(t *testing.T) {
 		key                                                string
 		input, cacheRead, cacheWrite, generated, reasoning int
 	}{
-		{"msg:22222222-2222-4222-8222-222222222222", 120, 8000, 2000, 410, 0},
-		{"msg:44444444-4444-4444-8444-444444444444", 340, 18000, 0, 1800, -1},
+		{"msg:msg_01", 120, 8000, 2000, 410, 0},
+		{"msg:msg_02", 340, 18000, 0, 1800, -1},
 	}
 	for i, w := range want {
 		got := sw.Calls[i]
@@ -209,17 +211,20 @@ func TestClaudeSessionFixture(t *testing.T) {
 	}
 
 	// One tool call is recorded, from the tool_use block. The matching
-	// tool_result arrives in a later *user* message and is deliberately not
-	// recorded a second time: the two halves are one tool call, and recording
-	// both would double the call count the Tool Usage table shows. Timing is
-	// recovered separately, by attributing a tool to the first LLM call after
-	// it in internal/store/queries.go.
+	// tool_result arrives in a later *user* message and completes that row
+	// rather than adding another: the two halves are one tool call, and
+	// recording both doubles the count the Tool Usage table shows. (This
+	// passed for a long time while the parser did exactly that, because the
+	// fixture's tool_result line was not valid JSON and so was never read.)
 	if len(sw.ToolCalls) != 1 {
 		t.Fatalf("recorded %d tool calls, want 1 (one tool_use; its tool_result is not counted again)",
 			len(sw.ToolCalls))
 	}
 	if sw.ToolCalls[0].Tool != "Read" {
 		t.Errorf("tool = %q, want Read", sw.ToolCalls[0].Tool)
+	}
+	if got := sw.ToolCalls[0].Seconds; got != 2 {
+		t.Errorf("tool seconds = %v, want 2 (tool_use at :12, its result at :14)", got)
 	}
 	if !sw.FirstTS.Before(sw.LastTS) {
 		t.Errorf("first %s is not before last %s", sw.FirstTS, sw.LastTS)
@@ -391,6 +396,115 @@ func TestClaudeIncrementalScanAppendsRatherThanRecounts(t *testing.T) {
 	}
 	if c.SessionUID != "session-1" {
 		t.Errorf("the increment lost the session uid: %q", c.SessionUID)
+	}
+}
+
+// TestClaudeContentBlocksOfOneResponseAreOneCall is the shape a real transcript
+// has and the fixture above does not: Claude Code writes each content block of a
+// response as a line of its own, and every one of those lines repeats the
+// response's whole usage block. Keyed by line, a response with a thinking block,
+// a text block and a tool call was three calls with three copies of its tokens.
+func TestClaudeContentBlocksOfOneResponseAreOneCall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "split.jsonl")
+	usage := `"usage":{"input_tokens":5,"output_tokens":300,` +
+		`"cache_read_input_tokens":20000,"cache_creation_input_tokens":100}`
+	line := func(uuid, ts, block string) string {
+		return `{"type":"assistant","sessionId":"split","cwd":"/home/testuser/project",` +
+			`"uuid":"` + uuid + `","timestamp":"2026-05-01T09:00:` + ts + `.000Z",` +
+			`"message":{"id":"msg_split","model":"claude-opus-4-8","content":[` + block + `],` + usage + `}}` + "\n"
+	}
+	log := `{"type":"user","sessionId":"split","uuid":"u0","timestamp":"2026-05-01T09:00:00.000Z",` +
+		`"message":{"role":"user","content":"go"}}` + "\n" +
+		line("a1", "04", `{"type":"thinking","thinking":"`+strings.Repeat("x", 400)+`"}`) +
+		line("a2", "05", `{"type":"text","text":"Running it."}`) +
+		line("a3", "05", `{"type":"tool_use","id":"toolu_split","name":"Bash","input":{}}`) +
+		`{"type":"user","sessionId":"split","uuid":"u1","timestamp":"2026-05-01T09:00:09.000Z",` +
+		`"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_split",` +
+		`"is_error":true,"content":"exit 1"}]}}` + "\n"
+	if err := os.WriteFile(path, []byte(log), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sw, _, err := NewClaudeParser().Parse(path, model.ScanState{}, testPricer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkInvariants(t, sw)
+	if len(sw.Calls) != 1 {
+		t.Fatalf("parsed %d calls, want 1: three lines of one response are one call", len(sw.Calls))
+	}
+	c := sw.Calls[0]
+	if c.CallKey != "msg:msg_split" {
+		t.Errorf("call key = %q, want the response's message id", c.CallKey)
+	}
+	if c.CacheReadTokens != 20000 || c.InputTokens != 5 || c.CacheWriteTokens != 100 {
+		t.Errorf("buckets = %+v, want the usage counted once", c)
+	}
+	checkGenerated(t, c, 300)
+	// The thinking block was on the first line and the call is kept from it,
+	// so the estimate survives the lines after it.
+	if c.ReasoningTokens != 100 {
+		t.Errorf("reasoning = %d, want 100 (400 chars of thinking)", c.ReasoningTokens)
+	}
+	// Latency is measured to the first line. A later line arriving with no
+	// request before it must not reset it to zero.
+	if c.LLMSeconds != 4 {
+		t.Errorf("llm seconds = %v, want 4", c.LLMSeconds)
+	}
+
+	if len(sw.ToolCalls) != 1 {
+		t.Fatalf("recorded %d tool calls, want 1", len(sw.ToolCalls))
+	}
+	tc := sw.ToolCalls[0]
+	if tc.Tool != "Bash" || !tc.IsError || tc.Seconds != 4 || tc.CallKey != "tool:toolu_split" {
+		t.Errorf("tool = %+v, want Bash, failed, 4s, keyed by its tool_use id", tc)
+	}
+}
+
+// A tool_result whose tool_use an earlier pass consumed has nothing in this
+// batch to complete. It is still recorded, under the same key, with no name,
+// so the store keeps the name the earlier pass wrote and takes the outcome.
+func TestClaudeToolResultAcrossPasses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "straddle.jsonl")
+	use := `{"type":"assistant","sessionId":"s","uuid":"a1","timestamp":"2026-05-01T09:00:01.000Z",` +
+		`"message":{"id":"msg_1","model":"claude-opus-4-8","content":[{"type":"tool_use",` +
+		`"id":"toolu_1","name":"Bash","input":{}}],"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n"
+	if err := os.WriteFile(path, []byte(use), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := NewClaudeParser()
+	first, state, err := p.Parse(path, model.ScanState{}, testPricer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.ToolCalls) != 1 || first.ToolCalls[0].Tool != "Bash" {
+		t.Fatalf("first pass tools = %+v", first.ToolCalls)
+	}
+
+	f, err := openAppend(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"type":"user","sessionId":"s","uuid":"u1","timestamp":"2026-05-01T09:01:00.000Z",` +
+		`"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true}]}}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	second, _, err := p.Parse(path, state, testPricer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.ToolCalls) != 1 {
+		t.Fatalf("second pass recorded %d tool calls, want 1", len(second.ToolCalls))
+	}
+	tc := second.ToolCalls[0]
+	if tc.CallKey != first.ToolCalls[0].CallKey {
+		t.Errorf("key = %q, want %q: the result must land on the tool_use's row",
+			tc.CallKey, first.ToolCalls[0].CallKey)
+	}
+	if tc.Tool != "" || !tc.IsError {
+		t.Errorf("tool = %+v, want no name (the store keeps the stored one) and failed", tc)
 	}
 }
 

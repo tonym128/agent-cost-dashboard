@@ -42,6 +42,16 @@ type parseCtx struct {
 	// lastRequest is the timestamp of the most recent user message or tool
 	// result, which is the lower bound for how long the next response took.
 	lastRequest time.Time
+	// claudeCalls maps an API message id to its call's index in the builder.
+	// Claude Code writes one line per content block, each repeating the
+	// response's usage, so the lines after the first fold into the call the
+	// first one made. claudeContent is every block seen for the message so far,
+	// which is what the thinking estimate is taken over.
+	claudeCalls   map[string]int
+	claudeContent map[string][]any
+	// claudeTools maps a tool_use id to its row in the builder, so the
+	// tool_result that arrives later completes that row instead of adding one.
+	claudeTools map[string]int
 }
 
 type pendingTool struct {
@@ -358,6 +368,12 @@ func consumeClaude(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	}
 
 	// A user record carrying tool results closes a turn.
+	//
+	// The result completes the row its tool_use opened rather than adding a
+	// second one: each tool call was once stored twice, by name and again as
+	// an anonymous "tool" row holding the error flag. The row takes the
+	// result's time, because the tool rollup charges a tool to the first call
+	// at or after it, and that is the call that read the result.
 	if typ == "user" {
 		msg := asMap(d["message"])
 		for _, item := range asSlice(msg["content"]) {
@@ -365,11 +381,26 @@ func consumeClaude(b *sessionBuilder, rec record, ctx *parseCtx) error {
 			if str(it, "type") != "tool_result" {
 				continue
 			}
-			b.addTool(model.ToolCall{
-				Tool:    "tool",
-				Time:    ts,
-				IsError: boolOf(it["is_error"]),
-			})
+			id := str(it, "tool_use_id")
+			isErr := boolOf(it["is_error"])
+			if i, ok := ctx.claudeTools[id]; ok && id != "" {
+				t := &b.toolCalls[i]
+				if !t.Time.IsZero() && !ts.IsZero() {
+					if secs := ts.Sub(t.Time).Seconds(); secs > 0 {
+						t.Seconds = secs
+					}
+				}
+				if !ts.IsZero() {
+					t.Time = ts
+				}
+				t.IsError = isErr
+			} else if id != "" {
+				// The tool_use was consumed by an earlier pass. The empty name
+				// tells the store to keep the one that pass recorded.
+				b.addTool(model.ToolCall{CallKey: "tool:" + id, Time: ts, IsError: isErr})
+			} else {
+				b.addTool(model.ToolCall{Tool: "tool", Time: ts, IsError: isErr})
+			}
 			ctx.lastRequest = ts
 		}
 		return nil
@@ -389,6 +420,74 @@ func consumeClaude(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	}
 	content := asSlice(msg["content"])
 
+	for _, item := range content {
+		it := asMap(item)
+		if str(it, "type") != "tool_use" {
+			continue
+		}
+		t := model.ToolCall{Tool: str(it, "name"), Time: ts}
+		if id := str(it, "id"); id != "" {
+			t.CallKey = "tool:" + id
+			if ctx.claudeTools == nil {
+				ctx.claudeTools = map[string]int{}
+			}
+			ctx.claudeTools[id] = len(b.toolCalls)
+		}
+		b.addTool(t)
+	}
+
+	// A later content block of a response already seen: same usage, so it is
+	// the same call. Only its blocks are new, and only a thinking block among
+	// them changes anything.
+	msgID := str(msg, "id")
+	if i, ok := ctx.claudeCalls[msgID]; ok && msgID != "" {
+		ctx.claudeContent[msgID] = append(ctx.claudeContent[msgID], content...)
+		c := &b.calls[i]
+		generated := fillClaudeUsage(c, usage, ctx.claudeContent[msgID])
+		c.TotalTokens = c.InputTokens + c.OutputTokens + c.CacheReadTokens +
+			c.CacheWriteTokens + c.ReasoningTokens
+		priceGenerated(ctx.pricer, c, generated)
+		return nil
+	}
+
+	llmSeconds := 0.0
+	if !ts.IsZero() && !ctx.lastRequest.IsZero() {
+		if delta := ts.Sub(ctx.lastRequest).Seconds(); delta > 0 && delta < 600 {
+			llmSeconds = delta
+		}
+	}
+	ctx.lastRequest = time.Time{}
+
+	c := model.Call{Model: modelName, Time: ts, LLMSeconds: llmSeconds}
+	generated := fillClaudeUsage(&c, usage, content)
+	// Keyed by the response, not the line: every content block of one response
+	// is a line of its own carrying the same usage, and keying by line uuid
+	// counted a response once per block. The uuid remains the fallback for a
+	// log without message ids.
+	if msgID != "" {
+		c.CallKey = "msg:" + msgID
+	} else if id := str(d, "uuid"); id != "" {
+		c.CallKey = "msg:" + id
+	}
+	// The whole generated count is billed at the output rate, thinking included,
+	// so the cost is unchanged by the split in fillClaudeUsage.
+	priceGenerated(ctx.pricer, &c, generated)
+	n := len(b.calls)
+	b.addCall(c)
+	if msgID != "" && len(b.calls) > n {
+		if ctx.claudeCalls == nil {
+			ctx.claudeCalls = map[string]int{}
+			ctx.claudeContent = map[string][]any{}
+		}
+		ctx.claudeCalls[msgID] = n
+		ctx.claudeContent[msgID] = append([]any(nil), content...)
+	}
+	return nil
+}
+
+// fillClaudeUsage sets a call's token counts from a usage block and returns the
+// whole generated count, which is what is billed at the output rate.
+func fillClaudeUsage(c *model.Call, usage map[string]any, content []any) int {
 	input := num(usage, "input_tokens")
 	generated := num(usage, "output_tokens")
 	cacheRead := num(usage, "cache_read_input_tokens")
@@ -402,39 +501,12 @@ func consumeClaude(b *sessionBuilder, rec record, ctx *parseCtx) error {
 	// driver of the spend is invisible.
 	visible, reasoning := visibleOutput(generated, claudeReasoning(usage, content))
 
-	llmSeconds := 0.0
-	if !ts.IsZero() && !ctx.lastRequest.IsZero() {
-		if delta := ts.Sub(ctx.lastRequest).Seconds(); delta > 0 && delta < 600 {
-			llmSeconds = delta
-		}
-	}
-	ctx.lastRequest = time.Time{}
-
-	for _, item := range content {
-		it := asMap(item)
-		if str(it, "type") == "tool_use" {
-			b.addTool(model.ToolCall{Tool: str(it, "name"), Time: ts})
-		}
-	}
-
-	c := model.Call{
-		Model:            modelName,
-		Time:             ts,
-		InputTokens:      int(input),
-		OutputTokens:     int(visible),
-		CacheReadTokens:  int(cacheRead),
-		CacheWriteTokens: int(cacheWrite),
-		ReasoningTokens:  int(reasoning),
-		LLMSeconds:       llmSeconds,
-	}
-	if id := str(d, "uuid"); id != "" {
-		c.CallKey = "msg:" + id
-	}
-	// The whole generated count is billed at the output rate, thinking included,
-	// so the cost is unchanged by the split above.
-	priceGenerated(ctx.pricer, &c, int(generated))
-	b.addCall(c)
-	return nil
+	c.InputTokens = int(input)
+	c.OutputTokens = int(visible)
+	c.CacheReadTokens = int(cacheRead)
+	c.CacheWriteTokens = int(cacheWrite)
+	c.ReasoningTokens = int(reasoning)
+	return int(generated)
 }
 
 // charsPerToken is the usual English-text ratio, used only to size a thinking
