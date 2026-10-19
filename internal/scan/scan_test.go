@@ -450,7 +450,7 @@ func TestRepriceRecomputesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err := st.Reprice(ctx, func(model string, in, out, cacheRead, cacheWrite int64) (float64, bool) {
+	n, err := st.Reprice(ctx, func(model string, in, out, cacheRead, cacheWrite, _ int64) (float64, bool) {
 		if model == "m" {
 			return 7.0, true
 		}

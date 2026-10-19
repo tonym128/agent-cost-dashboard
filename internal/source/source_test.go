@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strconv"
@@ -148,11 +149,15 @@ func TestPricerCostArithmetic(t *testing.T) {
 		}
 	}
 
-	// The billing rate is per million tokens: a million of them must cost exactly
-	// the published rate, and a thousand exactly a thousandth of it. No dollar
-	// amount appears here, so a price change cannot break it.
-	if got := one(perMillion, 0, 0, 0); got != rates.Input {
-		t.Errorf("1M input tokens cost %v, want the published input rate %v", got, rates.Input)
+	// The billing rate is per million tokens: a thousand input tokens must cost
+	// exactly a thousandth of the published rate. No dollar amount appears here,
+	// so a price change cannot break it. A thousand rather than a million keeps
+	// the prompt below every long-prompt tier, where a different rate applies
+	// by design (see TestPricerLongPromptTier). Output is not part of the
+	// prompt, so a million of it is still billed at the base rate.
+	const short = 1000
+	if got, want := one(short, 0, 0, 0), float64(short)/perMillion*rates.Input; got != want {
+		t.Errorf("%d input tokens cost %v, want %v at the published input rate %v", short, got, want, rates.Input)
 	}
 	if got := one(0, perMillion, 0, 0); got != rates.Output {
 		t.Errorf("1M output tokens cost %v, want the published output rate %v", got, rates.Output)
@@ -237,17 +242,19 @@ func TestPricerBucketsAreNotFlattened(t *testing.T) {
 			continue
 		}
 		checked++
-		const perMillion = 1_000_000
-		gotIn, _ := p.Cost(id, perMillion, 0, 0, 0)
-		gotOut, _ := p.Cost(id, 0, perMillion, 0, 0)
+		// Input and cache read are prompt tokens, so they are priced at a size
+		// below every long-prompt tier; output is not, and has none.
+		const n = 1000
+		gotIn, _ := p.Cost(id, n, 0, 0, 0)
+		gotOut, _ := p.Cost(id, 0, n, 0, 0)
 		if gotIn == gotOut && rates.Input != rates.Output {
-			t.Errorf("%s: a million input tokens and a million output tokens both cost "+
+			t.Errorf("%s: a thousand input tokens and a thousand output tokens both cost "+
 				"%v, though its rates are %v and %v: the pricer is not using the rate "+
 				"for the bucket it was given", id, gotIn, rates.Input, rates.Output)
 		}
-		gotCache, _ := p.Cost(id, 0, 0, perMillion, 0)
+		gotCache, _ := p.Cost(id, 0, 0, n, 0)
 		if rates.CacheRead != 0 && gotCache == gotIn && rates.CacheRead != rates.Input {
-			t.Errorf("%s: a million cache-read tokens cost the same %v as a million "+
+			t.Errorf("%s: a thousand cache-read tokens cost the same %v as a thousand "+
 				"input tokens, though its rates are %v and %v", id, gotCache,
 				rates.CacheRead, rates.Input)
 		}
@@ -280,21 +287,22 @@ func TestPricerBillsReasoningAtTheOutputRate(t *testing.T) {
 			continue
 		}
 		checked++
-		const perMillion = 1_000_000
-		asOutput, _ := p.Cost(id, 0, perMillion, 0, 0)
-		asInput, _ := p.Cost(id, perMillion, 0, 0, 0)
+		// A thousand, so the input comparison stays below every long-prompt tier.
+		const perMillion, n = 1_000_000, 1000
+		asOutput, _ := p.Cost(id, 0, n, 0, 0)
+		asInput, _ := p.Cost(id, n, 0, 0, 0)
 
 		// The generated count is billed at the output rate. This is the assertion
 		// that fails if reasoning is billed as input or ignored: both would give a
 		// number below the output rate, and the two cannot be told apart by cost
 		// alone, so the exact-rate check below is what distinguishes them.
-		if want := perMillion / 1e6 * rates.Output; asOutput != want {
-			t.Fatalf("%s: a million generated tokens billed %v, want %v at the output "+
+		if want := float64(n) / perMillion * rates.Output; asOutput != want {
+			t.Fatalf("%s: a thousand generated tokens billed %v, want %v at the output "+
 				"rate %v: thinking is billed as output, so anything else is a fraction "+
 				"of the real cost", id, asOutput, want, rates.Output)
 		}
 		if asOutput <= asInput {
-			t.Errorf("%s: a million generated tokens billed %v, no more than the same "+
+			t.Errorf("%s: a thousand generated tokens billed %v, no more than the same "+
 				"count as input (%v), though its output rate %v exceeds its input rate "+
 				"%v", id, asOutput, asInput, rates.Output, rates.Input)
 		}
@@ -345,7 +353,7 @@ func TestPricerCachesResolution(t *testing.T) {
 	p.Resolve("google/gemini-2.5-flash")
 	spelled, okSpelled := p.Resolve("gemini-2.5-flash")
 	plain, okPlain := p.Resolve("gemini-2.5-flash")
-	if !okSpelled || !okPlain || spelled != plain {
+	if !okSpelled || !okPlain || !reflect.DeepEqual(spelled, plain) {
 		t.Errorf("a vendor-prefixed id resolved to %v/%v and the bare id to %v/%v; both "+
 			"spellings of one model must reach the same rates", spelled, okSpelled, plain, okPlain)
 	}

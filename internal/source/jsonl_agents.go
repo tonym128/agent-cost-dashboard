@@ -494,6 +494,10 @@ func fillClaudeUsage(c *model.Call, usage map[string]any, content []any) int {
 	// cache_creation_input_tokens is the aggregate; the per-window breakdown
 	// underneath it must not also be added, or cache writes double count.
 	cacheWrite := num(usage, "cache_creation_input_tokens")
+	// The breakdown is still read, for one thing only: how much of the total
+	// was written with a one-hour lifetime, which bills at a higher rate.
+	// Claude Code writes the one-hour kind.
+	cacheWrite1h := num(asMap(usage["cache_creation"]), "ephemeral_1h_input_tokens")
 
 	// Anthropic bills extended thinking at the output rate and folds it into
 	// output_tokens rather than reporting it separately, so without this split
@@ -505,6 +509,7 @@ func fillClaudeUsage(c *model.Call, usage map[string]any, content []any) int {
 	c.OutputTokens = int(visible)
 	c.CacheReadTokens = int(cacheRead)
 	c.CacheWriteTokens = int(cacheWrite)
+	c.CacheWrite1hTokens = int(min(cacheWrite1h, cacheWrite))
 	c.ReasoningTokens = int(reasoning)
 	return int(generated)
 }

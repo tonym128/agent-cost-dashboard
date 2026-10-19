@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -87,5 +88,34 @@ func TestToolRowWithoutNameKeepsStoredName(t *testing.T) {
 	}
 	if n != 1 || tool != "Bash" || isErr != 1 {
 		t.Errorf("rows=%d tool=%q is_error=%d, want 1 row, Bash, failed", n, tool, isErr)
+	}
+}
+
+// Reprice works from the stored columns, so the one-hour share of a call's
+// cache writes has to be stored and handed back, or repricing would quietly
+// bill every one-hour write at the cheaper five-minute rate.
+func TestRepriceSeesOneHourCacheWrites(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "rp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.ReplaceSession(model.SessionWrite{
+		Session: model.Session{UID: "c1", Agent: model.AgentClaude},
+		Calls: []model.Call{{SessionUID: "c1", CallKey: "msg:x", Agent: model.AgentClaude,
+			CacheWriteTokens: 1000, CacheWrite1hTokens: 400, TotalTokens: 1000,
+			Time: time.Unix(1773540000, 0)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var gotCW, got1h int64
+	if _, err := st.Reprice(context.Background(), func(_ string, _, _, _, cw, cw1h int64) (float64, bool) {
+		gotCW, got1h = cw, cw1h
+		return 1, true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotCW != 1000 || got1h != 400 {
+		t.Errorf("reprice saw cache write %d / 1h %d, want 1000 / 400", gotCW, got1h)
 	}
 }

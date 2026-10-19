@@ -90,9 +90,9 @@
     "cache_write": 0.0833
   },
   "gemini-3.8-flash": {
-    "input": 0.5,
-    "output": 3.0,
-    "cache_read": 0.05,
+    "input": 0.75,
+    "output": 3.75,
+    "cache_read": 0.075,
     "cache_write": 0.0833
   },
   "claude-opus-4.5": {

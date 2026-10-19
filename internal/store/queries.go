@@ -734,11 +734,11 @@ func (s *Store) Facets(ctx context.Context) (models, agents, projects []string, 
 // priced at rates from months ago, and priced at no rate at all for a model
 // that was unknown then. Recomputing from the stored token columns makes the
 // correction retroactive, which is the point of keeping them.
-func (s *Store) Reprice(ctx context.Context, price func(model string, in, out, cacheRead, cacheWrite int64) (float64, bool)) (int, error) {
+func (s *Store) Reprice(ctx context.Context, price func(model string, in, out, cacheRead, cacheWrite, cacheWrite1h int64) (float64, bool)) (int, error) {
 	type row struct {
 		session, key, model             string
 		in, out_, cacheRead, cacheWrite int64
-		reasoning                       int64
+		cacheWrite1h, reasoning         int64
 	}
 	// reasoning_tokens is selected because it is part of the billable output.
 	// Every parser stores OutputTokens as the non-reasoning remainder and
@@ -750,7 +750,8 @@ func (s *Store) Reprice(ctx context.Context, price func(model string, in, out, c
 	// the documented remedy for stale prices is itself a source of wrong money.
 	rows, err := s.q.QueryContext(ctx,
 		`SELECT session_uid, call_key, model, input_tokens, output_tokens,
-		        reasoning_tokens, cache_read_tokens, cache_write_tokens FROM call`)
+		        reasoning_tokens, cache_read_tokens, cache_write_tokens,
+		        cache_write_1h_tokens FROM call`)
 	if err != nil {
 		return 0, err
 	}
@@ -758,7 +759,7 @@ func (s *Store) Reprice(ctx context.Context, price func(model string, in, out, c
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.session, &r.key, &r.model, &r.in, &r.out_,
-			&r.reasoning, &r.cacheRead, &r.cacheWrite); err != nil {
+			&r.reasoning, &r.cacheRead, &r.cacheWrite, &r.cacheWrite1h); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -780,7 +781,7 @@ func (s *Store) Reprice(ctx context.Context, price func(model string, in, out, c
 		for _, r := range all {
 			// output + reasoning is the billable generated count: the parsers carve
 			// thinking out of output for display and bill the whole thing.
-			cost, priced := price(r.model, r.in, r.out_+r.reasoning, r.cacheRead, r.cacheWrite)
+			cost, priced := price(r.model, r.in, r.out_+r.reasoning, r.cacheRead, r.cacheWrite, r.cacheWrite1h)
 			if _, err := stmt.Exec(cost, boolInt(priced), r.session, r.key); err != nil {
 				return err
 			}

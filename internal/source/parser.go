@@ -207,7 +207,7 @@ func price(pricer *Pricer, c *model.Call) {
 	if pricer == nil {
 		return
 	}
-	c.CostUSD, c.Priced = pricer.Cost(c.Model, c.InputTokens, c.OutputTokens, c.CacheReadTokens, c.CacheWriteTokens)
+	c.CostUSD, c.Priced = pricer.CostCall(c.Model, c.InputTokens, c.OutputTokens, c.CacheReadTokens, c.CacheWriteTokens, c.CacheWrite1hTokens)
 }
 
 // priceGenerated prices a call whose billable output is larger than the figure
@@ -223,7 +223,7 @@ func priceGenerated(pricer *Pricer, c *model.Call, generated int) {
 	if pricer == nil {
 		return
 	}
-	c.CostUSD, c.Priced = pricer.Cost(c.Model, c.InputTokens, generated, c.CacheReadTokens, c.CacheWriteTokens)
+	c.CostUSD, c.Priced = pricer.CostCall(c.Model, c.InputTokens, generated, c.CacheReadTokens, c.CacheWriteTokens, c.CacheWrite1hTokens)
 }
 
 // visibleOutput splits a generated count into its reasoning and non-reasoning

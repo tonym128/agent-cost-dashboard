@@ -44,8 +44,13 @@ type Call struct {
 	OutputTokens     int
 	CacheReadTokens  int
 	CacheWriteTokens int
-	ReasoningTokens  int
-	TotalTokens      int
+	// CacheWrite1hTokens is the part of CacheWriteTokens written with a
+	// one-hour lifetime, which Anthropic bills at twice the input rate rather
+	// than the five-minute write rate. It is stored so a reprice can
+	// reproduce that, and is zero for every agent that does not report it.
+	CacheWrite1hTokens int
+	ReasoningTokens    int
+	TotalTokens        int
 
 	// LLMSeconds is wall time attributed to the call, used for response-time
 	// and throughput figures. Zero when the log has no usable timing.

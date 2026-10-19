@@ -19,7 +19,35 @@ type Rates struct {
 	Output     float64 `json:"output"`
 	CacheRead  float64 `json:"cache_read"`
 	CacheWrite float64 `json:"cache_write"`
+	// Tiers are the higher rates some models charge once a prompt is long
+	// enough — Gemini Pro above 200K tokens, GPT above 272K — ordered by
+	// threshold. A call is priced entirely at the highest tier its prompt
+	// reaches, which is how the providers bill it.
+	Tiers []Tier `json:"tiers,omitempty"`
 }
+
+// Tier is a set of rates that applies from a prompt size upward.
+type Tier struct {
+	MinPrompt int `json:"min_prompt_tokens"`
+	Rates
+}
+
+// forPrompt returns the rates a call with this many prompt tokens pays.
+func (r Rates) forPrompt(prompt int) Rates {
+	out := r
+	for _, t := range r.Tiers {
+		if prompt >= t.MinPrompt {
+			out = t.Rates
+		}
+	}
+	out.Tiers = nil
+	return out
+}
+
+// cacheWrite1hMultiplier is Anthropic's price for a one-hour cache write, as a
+// multiple of the base input rate. A five-minute write is 1.25x, which is what
+// the catalogue's cache-write rate is; Claude Code writes the one-hour kind.
+const cacheWrite1hMultiplier = 2.0
 
 // manualPricingJSON is the fallback price table, compiled into the binary so a
 // misconfigured or missing path can never leave the dashboard unable to price
@@ -27,6 +55,14 @@ type Rates struct {
 //
 //go:embed manual_pricing.json
 var manualPricingJSON []byte
+
+// pricingOverridesJSON holds prices checked against a provider's own price
+// list, for models where the OpenRouter catalogue charges something else — a
+// reseller margin, typically. It is consulted before the catalogue, by exact
+// normalised key, so it can only ever affect the models it names.
+//
+//go:embed pricing_overrides.json
+var pricingOverridesJSON []byte
 
 // Pricer resolves a model label to rates.
 //
@@ -38,6 +74,7 @@ var manualPricingJSON []byte
 // hand-maintained fallback table get a substring test, where the blast radius
 // of a wrong match is limited to the few dozen models it lists.
 type Pricer struct {
+	overrides  map[string]Rates
 	openRouter map[string]Rates
 	manual     map[string]Rates
 	// manualKeys is sorted longest-first so the first substring hit is also the
@@ -61,6 +98,9 @@ func NewPricer(modelsPath, manualPath string) (*Pricer, error) {
 		openRouter: map[string]Rates{},
 		manual:     map[string]Rates{},
 		cache:      map[string]resolved{},
+	}
+	if err := p.loadOverrides(); err != nil {
+		return nil, err
 	}
 	if modelsPath != "" {
 		if err := p.loadOpenRouter(modelsPath); err != nil {
@@ -98,10 +138,11 @@ type openRouterDoc struct {
 	Data []struct {
 		ID      string `json:"id"`
 		Pricing struct {
-			Prompt     string `json:"prompt"`
-			Completion string `json:"completion"`
-			CacheRead  string `json:"input_cache_read"`
-			CacheWrite string `json:"input_cache_write"`
+			openRouterPrice
+			Overrides []struct {
+				MinPrompt int `json:"min_prompt_tokens"`
+				openRouterPrice
+			} `json:"overrides"`
 		} `json:"pricing"`
 	} `json:"data"`
 }
@@ -118,17 +159,20 @@ func (p *Pricer) loadOpenRouter(path string) error {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
-	const perMillion = 1_000_000
 	for _, m := range doc.Data {
 		if m.ID == "" {
 			continue
 		}
-		entry := Rates{
-			Input:      perMillion * atof(m.Pricing.Prompt),
-			Output:     perMillion * atof(m.Pricing.Completion),
-			CacheRead:  perMillion * atof(m.Pricing.CacheRead),
-			CacheWrite: perMillion * atof(m.Pricing.CacheWrite),
+		entry := m.Pricing.rates(Rates{})
+		// A long-prompt override lists only the rates that change; the rest
+		// carry over from the base price.
+		for _, o := range m.Pricing.Overrides {
+			if o.MinPrompt <= 0 {
+				continue
+			}
+			entry.Tiers = append(entry.Tiers, Tier{MinPrompt: o.MinPrompt, Rates: o.rates(entry)})
 		}
+		sort.Slice(entry.Tiers, func(i, j int) bool { return entry.Tiers[i].MinPrompt < entry.Tiers[j].MinPrompt })
 		key := NormalizeModel(m.ID)
 		// A zero-priced variant must not clobber a real entry for the same key:
 		// catalogues routinely list both "vendor/model" and "vendor/model:free".
@@ -142,6 +186,45 @@ func (p *Pricer) loadOpenRouter(path string) error {
 		p.liveKeys = append(p.liveKeys, k)
 	}
 	sortLongestFirst(p.liveKeys)
+	return nil
+}
+
+// openRouterPrice is one price as the catalogue spells it: dollars per token,
+// as strings, with an absent field meaning "not listed".
+type openRouterPrice struct {
+	Prompt     *string `json:"prompt"`
+	Completion *string `json:"completion"`
+	CacheRead  *string `json:"input_cache_read"`
+	CacheWrite *string `json:"input_cache_write"`
+}
+
+// rates converts a catalogue price to per-million rates, taking any field the
+// price does not list from base.
+func (o openRouterPrice) rates(base Rates) Rates {
+	const perMillion = 1_000_000
+	pick := func(v *string, fallback float64) float64 {
+		if v == nil {
+			return fallback
+		}
+		return perMillion * atof(*v)
+	}
+	return Rates{
+		Input:      pick(o.Prompt, base.Input),
+		Output:     pick(o.Completion, base.Output),
+		CacheRead:  pick(o.CacheRead, base.CacheRead),
+		CacheWrite: pick(o.CacheWrite, base.CacheWrite),
+	}
+}
+
+func (p *Pricer) loadOverrides() error {
+	p.overrides = map[string]Rates{}
+	raw := map[string]Rates{}
+	if err := json.Unmarshal(pricingOverridesJSON, &raw); err != nil {
+		return fmt.Errorf("parse embedded price overrides: %w", err)
+	}
+	for k, r := range raw {
+		p.overrides[NormalizeModel(k)] = r
+	}
 	return nil
 }
 
@@ -198,6 +281,10 @@ func (p *Pricer) resolveUncached(model string) resolved {
 	if model == "" {
 		return resolved{}
 	}
+	// 0. A price checked against the provider's own list, exact key.
+	if r, ok := p.overrides[NormalizeModel(model)]; ok {
+		return resolved{rates: r, ok: true}
+	}
 	// 1. Live catalogue, exact key.
 	if r, ok := p.openRouter[NormalizeModel(model)]; ok {
 		return resolved{rates: r, ok: true}
@@ -214,15 +301,34 @@ func (p *Pricer) resolveUncached(model string) resolved {
 
 // Cost computes the dollar cost of one call, and whether it could be priced.
 func (p *Pricer) Cost(model string, input, output, cacheRead, cacheWrite int) (float64, bool) {
-	rates, ok := p.Resolve(model)
+	return p.CostCall(model, input, output, cacheRead, cacheWrite, 0)
+}
+
+// CostCall is Cost with the share of the cache writes that were one-hour
+// writes, which Anthropic bills at twice the input rate rather than at the
+// five-minute rate the catalogue lists. cacheWrite1h is part of cacheWrite,
+// not in addition to it.
+//
+// The prompt that selects a long-prompt tier is every input bucket together:
+// the parsers store them disjoint, and the providers count all of them.
+func (p *Pricer) CostCall(model string, input, output, cacheRead, cacheWrite, cacheWrite1h int) (float64, bool) {
+	all, ok := p.Resolve(model)
 	if !ok {
 		return 0, false
+	}
+	rates := all.forPrompt(input + cacheRead + cacheWrite)
+	if cacheWrite1h > cacheWrite {
+		cacheWrite1h = cacheWrite
+	}
+	if cacheWrite1h < 0 {
+		cacheWrite1h = 0
 	}
 	const perMillion = 1_000_000
 	return float64(input)/perMillion*rates.Input +
 		float64(output)/perMillion*rates.Output +
 		float64(cacheRead)/perMillion*rates.CacheRead +
-		float64(cacheWrite)/perMillion*rates.CacheWrite, true
+		float64(cacheWrite-cacheWrite1h)/perMillion*rates.CacheWrite +
+		float64(cacheWrite1h)/perMillion*rates.Input*cacheWrite1hMultiplier, true
 }
 
 // FallbackReachability reports, for each pattern in the embedded table, whether

@@ -101,6 +101,9 @@ func fixture(t *testing.T, at time.Time) []model.SessionWrite {
 // openV0 creates at path a database in the pre-migration shape — the whole v1
 // schema, no user_version, none of the version 2 indexes — populated with the
 // fixture through the ordinary ingestion path, and leaves it closed.
+// addedColumns are the `call` columns migrations have added since v0.
+var addedColumns = []string{"cache_write_1h_tokens"}
+
 func openV0(t *testing.T, path string) {
 	t.Helper()
 	db := rawDB(t, path)
@@ -109,12 +112,25 @@ func openV0(t *testing.T, path string) {
 	}
 	at := fixtureAt(t)
 	st := &Store{db: db, q: db, Path: path}
+	// The rows are written by today's insert, which names every column a later
+	// migration added. Those columns are present only while seeding and are
+	// dropped again below, so what the tests open is a v0 table holding v0 data.
+	for _, col := range addedColumns {
+		if _, err := db.Exec("ALTER TABLE call ADD COLUMN " + col + " INTEGER NOT NULL DEFAULT 0"); err != nil {
+			t.Fatalf("seed: add %s: %v", col, err)
+		}
+	}
 	for _, sess := range fixture(t, at) {
 		if err := st.ReplaceSession(sess); err != nil {
 			t.Fatalf("seed %s: %v", sess.UID, err)
 		}
 		if err := st.RecomputeSession(sess.UID); err != nil {
 			t.Fatalf("seed summaries %s: %v", sess.UID, err)
+		}
+	}
+	for _, col := range addedColumns {
+		if _, err := db.Exec("ALTER TABLE call DROP COLUMN " + col); err != nil {
+			t.Fatalf("seed: drop %s: %v", col, err)
 		}
 	}
 	// The fixture has to be a v0 database, or the tests below prove nothing.

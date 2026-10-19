@@ -405,6 +405,7 @@ var migrations = []migration{
 	},
 	v3DropPrefixIndexes,
 	v4ResetClaude,
+	v5CacheWrite1h,
 }
 
 // execScript turns a multi-statement script into a migration step.
@@ -663,14 +664,15 @@ func insertSessionRows(tx *sql.Tx, sess model.SessionWrite) error {
 	callStmt, err := tx.Prepare(`
 		INSERT INTO call (session_uid, call_key, agent, project, model, ts, day,
 		                  input_tokens, output_tokens, cache_read_tokens,
-		                  cache_write_tokens, reasoning_tokens, total_tokens,
-		                  llm_seconds, cost_usd, priced)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		                  cache_write_tokens, cache_write_1h_tokens, reasoning_tokens,
+		                  total_tokens, llm_seconds, cost_usd, priced)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(session_uid, call_key) DO UPDATE SET
 			model = excluded.model, ts = excluded.ts, day = excluded.day,
 			input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
 			cache_read_tokens = excluded.cache_read_tokens,
 			cache_write_tokens = excluded.cache_write_tokens,
+			cache_write_1h_tokens = excluded.cache_write_1h_tokens,
 			reasoning_tokens = excluded.reasoning_tokens,
 			total_tokens = excluded.total_tokens, llm_seconds = excluded.llm_seconds,
 			cost_usd = excluded.cost_usd, priced = excluded.priced`)
@@ -691,7 +693,7 @@ func insertSessionRows(tx *sql.Tx, sess model.SessionWrite) error {
 		if _, err := callStmt.Exec(
 			c.SessionUID, c.CallKey, c.Agent, rowProject(sess.Project, c.Project), c.Model, ts, day,
 			c.InputTokens, c.OutputTokens, c.CacheReadTokens, c.CacheWriteTokens,
-			c.ReasoningTokens, c.TotalTokens, c.LLMSeconds, c.CostUSD, boolInt(c.Priced),
+			c.CacheWrite1hTokens, c.ReasoningTokens, c.TotalTokens, c.LLMSeconds, c.CostUSD, boolInt(c.Priced),
 		); err != nil {
 			return fmt.Errorf("insert call %s/%s: %w", c.SessionUID, c.CallKey, err)
 		}

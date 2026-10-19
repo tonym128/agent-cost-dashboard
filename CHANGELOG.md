@@ -62,6 +62,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid JSON, so it was never read.
 - **`models.json` refreshed**, so Claude 5 models are priced rather than reported
   as unpriced.
+- **Claude Code's one-hour cache writes were billed at the five-minute rate.**
+  Anthropic charges a one-hour write at 2x input (1.25x for five minutes), and
+  every cache write Claude Code makes is the one-hour kind, so Claude cache
+  writes were under-billed by 37.5%. The one-hour share is now read from the
+  usage block, stored (schema step v5, which re-reads Claude logs to fill it)
+  and priced at 2x input, by the scan and by `dashd reprice` alike.
+- **Long-prompt price tiers were ignored.** Gemini Pro bills a prompt over 200K
+  tokens at higher rates, GPT over 272K, Haiku 5.5 over 100K; every call was
+  billed at the base rate. The tiers are read from the catalogue's `overrides`
+  and a call is priced at the tier its whole prompt (input plus cache) reaches.
+- **`gemini-3.8-flash` was priced 10% above Google's list price** through the
+  OpenRouter catalogue, and at a stale $0.50/$3.00 in the fallback table. A new
+  embedded `pricing_overrides.json` holds prices checked against the provider's
+  own list and takes precedence over the catalogue for the models it names; it
+  and the fallback table now carry Google's $0.75/$3.75. Google's rate doubles
+  on 2027-01-01, which this table does not yet model.
 - **The Copy button handed OpenCode users `opencode --session ''`.** An OpenCode
   session has no transcript file, so the path the command was built from is
   always empty; OpenCode resumes by session id, and that is what it is now given.

@@ -127,8 +127,8 @@ func run(o options, command string, stdout io.Writer) error {
 		return printStats(st, stdout)
 
 	case "reprice":
-		n, err := st.Reprice(ctx, func(m string, in, out, cacheRead, cacheWrite int64) (float64, bool) {
-			return pricer.Cost(m, int(in), int(out), int(cacheRead), int(cacheWrite))
+		n, err := st.Reprice(ctx, func(m string, in, out, cacheRead, cacheWrite, cacheWrite1h int64) (float64, bool) {
+			return pricer.CostCall(m, int(in), int(out), int(cacheRead), int(cacheWrite), int(cacheWrite1h))
 		})
 		if err != nil {
 			return err

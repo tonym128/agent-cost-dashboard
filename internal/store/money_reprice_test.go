@@ -20,7 +20,7 @@ import (
 // inspection: billable tokens times the rate, with no rate-mix confusion.
 const repriceBillable = 5e-6
 
-func repricePrice(_ string, in, out, cr, cw int64) (float64, bool) {
+func repricePrice(_ string, in, out, cr, cw, _ int64) (float64, bool) {
 	return float64(in+out+cr+cw) * repriceBillable, true
 }
 
@@ -48,7 +48,7 @@ func writeRepriceCalls(t *testing.T, st *Store) {
 			CacheReadTokens: spec.cr, CacheWriteTokens: spec.cw,
 		}
 		c.CostUSD, c.Priced = repricePrice(c.Model, int64(c.InputTokens),
-			int64(c.OutputTokens+c.ReasoningTokens), int64(c.CacheReadTokens), int64(c.CacheWriteTokens))
+			int64(c.OutputTokens+c.ReasoningTokens), int64(c.CacheReadTokens), int64(c.CacheWriteTokens), 0)
 		c.TotalTokens = c.InputTokens + c.OutputTokens + c.CacheReadTokens +
 			c.CacheWriteTokens + c.ReasoningTokens
 		sess.Calls = append(sess.Calls, c)
@@ -163,8 +163,8 @@ func TestRepricePricesReasoning(t *testing.T) {
 	// and the shortfall is exactly reasoning*Surcharge.
 	const surcharge = 1e-3
 	before := storedCost(t, st)
-	if _, err := st.Reprice(context.Background(), func(m string, in, out, cr, cw int64) (float64, bool) {
-		cost, _ := repricePrice(m, in, out, cr, cw)
+	if _, err := st.Reprice(context.Background(), func(m string, in, out, cr, cw, _ int64) (float64, bool) {
+		cost, _ := repricePrice(m, in, out, cr, cw, 0)
 		return cost + float64(reasoning)*surcharge, true
 	}); err != nil {
 		t.Fatalf("Reprice: %v", err)
