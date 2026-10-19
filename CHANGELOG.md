@@ -78,6 +78,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own list and takes precedence over the catalogue for the models it names; it
   and the fallback table now carry Google's $0.75/$3.75. Google's rate doubles
   on 2027-01-01, which this table does not yet model.
+- **A source whose files failed to ingest was reported as `ok`.** A file that
+  could not be read or stored was logged and skipped, and nothing else heard
+  about it: the source's status, the status page, the `dashd scan` summary and
+  the exit code all said the pass succeeded. After a schema change left a
+  column missing, every Claude write failed this way and the summary read
+  `claude ... 0 calls ok`. Failed files are still skipped and retried, so the
+  rest of the source goes in, but the pass now reports them — "N of M changed
+  files failed" with the first error — on the source's status and in the exit
+  code. `dashd scan` also prints its summary before exiting on a failure, since
+  the per-source lines are where the failure is named.
 - **The Copy button handed OpenCode users `opencode --session ''`.** An OpenCode
   session has no transcript file, so the path the command was built from is
   always empty; OpenCode resumes by session id, and that is what it is now given.

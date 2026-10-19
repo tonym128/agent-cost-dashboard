@@ -107,18 +107,20 @@ func (s *Scanner) RunOnce(ctx context.Context) error {
 	var errs []error
 	for _, src := range s.cfg.Sources {
 		found, ingested, err := s.scanSource(ctx, src, states)
+		// Whatever was ingested before or around a failure is in the store,
+		// so it counts either way.
+		changedFiles += found.changed
+		changedSessions += ingested
 		if err != nil {
 			// One broken source must not stop the others; the failure is
 			// recorded on that source's status and surfaced in the UI, and
 			// joined into the returned error so a cron-driven caller's exit
 			// code reflects it.
 			s.log.Error("source scan failed", "agent", src.Agent, "error", err)
-			s.recordStatus(src.Agent, found.seen, found.changed, 0, err)
+			s.recordStatus(src.Agent, found.seen, found.changed, ingested, err)
 			errs = append(errs, fmt.Errorf("%s: %w", src.Agent, err))
 			continue
 		}
-		changedFiles += found.changed
-		changedSessions += ingested
 		s.recordStatus(src.Agent, found.seen, found.changed, ingested, nil)
 	}
 
@@ -221,6 +223,7 @@ func (s *Scanner) scanSource(ctx context.Context, src Source, states map[string]
 	}
 	tally := fileTally{seen: len(paths)}
 	ingested := 0
+	var failed []error
 
 	// A cap on how many files one pass will fully re-read. A machine that has
 	// just come back from months of being off, or a source whose layout changed,
@@ -254,13 +257,28 @@ func (s *Scanner) scanSource(ctx context.Context, src Source, states map[string]
 
 		n, err := s.ingest(path, st, src.parserFor())
 		if err != nil {
-			// A file that cannot be parsed is skipped and retried next pass
+			// A file that cannot be ingested is skipped and retried next pass
 			// rather than being marked done, so a transient read error (a file
-			// being rewritten underneath us) is not made permanent.
-			s.log.Warn("skipping unreadable source", "path", path, "error", err)
+			// being rewritten underneath us) is not made permanent. The rest of
+			// the source still goes in.
+			//
+			// It is still a failure of this pass, and is returned as one. This
+			// used to end at the log line, so the source's status read "ok"
+			// while every one of its files was failing to store — a missing
+			// column after a schema change rejected every Claude write, and
+			// the scan summary, the status page and the exit code all said
+			// nothing was wrong.
+			s.log.Warn("could not ingest source", "path", path, "error", err)
+			failed = append(failed, err)
 			continue
 		}
 		ingested += n
+	}
+	if len(failed) > 0 {
+		// The first error is kept whole, because it is usually the whole story:
+		// the same fault repeated across every file.
+		return tally, ingested, fmt.Errorf("%d of %d changed files failed; first: %w",
+			len(failed), tally.changed, failed[0])
 	}
 	return tally, ingested, nil
 }

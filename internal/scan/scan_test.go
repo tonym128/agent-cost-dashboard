@@ -1354,3 +1354,69 @@ func TestHomeRelativeRootIsUnknownForAnUnknownAgent(t *testing.T) {
 		t.Error("an unknown agent resolved to a log location")
 	}
 }
+
+// A file that fails to ingest is skipped so the rest of the source still goes
+// in, but the pass must say it failed: on the source's status, which the page
+// and `dashd scan` show, and in RunOnce's error, which is the exit code. It
+// used to end at a log line, so a source whose every file was failing to store
+// read "ok".
+func TestScanReportsAFileThatFailsToIngest(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 file, so it cannot be made to fail this way")
+	}
+	root := t.TempDir()
+	writeJSONL(t, filepath.Join(root, "good.jsonl"),
+		`{"type":"session","id":"good","cwd":"/tmp/p"}`,
+		`{"type":"message","timestamp":"2026-05-01T00:00:05Z","id":"m1","message":{"role":"assistant","model":"gemini-2.5-pro","usage":{"input":100,"output":50}}}`,
+	)
+	bad := filepath.Join(root, "bad.jsonl")
+	writeJSONL(t, bad, `{"type":"session","id":"bad","cwd":"/tmp/p"}`)
+	if err := os.Chmod(bad, 0); err != nil {
+		t.Fatal(err)
+	}
+	st := newTestStore(t)
+	sc := newScanner(t, st, root)
+
+	err := sc.RunOnce(context.Background())
+	if err == nil {
+		t.Fatal("a pass with a file that could not be read returned no error")
+	}
+	if !strings.Contains(err.Error(), "1 of 2 changed files failed") {
+		t.Errorf("error = %q, want it to say how many files failed", err)
+	}
+
+	statuses, _ := st.ScanStatuses()
+	var pi *model.ScanStatus
+	for i := range statuses {
+		if statuses[i].Agent == model.AgentPi {
+			pi = &statuses[i]
+		}
+	}
+	if pi == nil {
+		t.Fatal("no status recorded for the source")
+	}
+	if pi.Error == "" {
+		t.Error("the source's status records no error, so it reads as ok")
+	}
+	// The good file is not held hostage by the bad one, and is counted.
+	if pi.CallsIngested != 1 {
+		t.Errorf("status counts %d calls ingested, want the good file's 1", pi.CallsIngested)
+	}
+	if totals, _ := st.Totals(context.Background(), store.Filter{}); totals.Calls != 1 {
+		t.Errorf("stored %d calls, want 1", totals.Calls)
+	}
+
+	// Fixed, the file is picked up and the error clears.
+	if err := os.Chmod(bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass after the fix: %v", err)
+	}
+	statuses, _ = st.ScanStatuses()
+	for _, s := range statuses {
+		if s.Agent == model.AgentPi && s.Error != "" {
+			t.Errorf("status still reports %q after the file became readable", s.Error)
+		}
+	}
+}

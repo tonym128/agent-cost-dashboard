@@ -121,10 +121,13 @@ func run(o options, command string, stdout io.Writer) error {
 	case "scan":
 		// One pass and out, for a machine that would rather be driven by cron
 		// or a systemd timer than by a resident process.
-		if err := scanner.RunOnce(ctx); err != nil {
-			return err
+		// The totals are printed even after a failed pass: the per-source
+		// lines are where the failure is named, and what did go in is real.
+		scanErr := scanner.RunOnce(ctx)
+		if err := printStats(st, stdout); err != nil {
+			return errors.Join(scanErr, err)
 		}
-		return printStats(st, stdout)
+		return scanErr
 
 	case "reprice":
 		n, err := st.Reprice(ctx, func(m string, in, out, cacheRead, cacheWrite, cacheWrite1h int64) (float64, bool) {
