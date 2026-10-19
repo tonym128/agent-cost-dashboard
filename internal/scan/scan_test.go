@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -1361,6 +1362,12 @@ func TestHomeRelativeRootIsUnknownForAnUnknownAgent(t *testing.T) {
 // used to end at a log line, so a source whose every file was failing to store
 // read "ok".
 func TestScanReportsAFileThatFailsToIngest(t *testing.T) {
+	// The file is made to fail by removing its read permission. Windows does
+	// not honour that bit and root ignores it; the code under test is the same
+	// everywhere, and Linux and macOS cover it.
+	if runtime.GOOS == "windows" {
+		t.Skip("a mode-000 file is still readable on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a mode-000 file, so it cannot be made to fail this way")
 	}
