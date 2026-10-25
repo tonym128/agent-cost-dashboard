@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tonym128/agent-cost-dashboard/internal/model"
 )
@@ -1067,4 +1068,83 @@ func setFakeHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	return home
+}
+
+func TestAntigravityModelMappingAndPricing(t *testing.T) {
+	p := testPricer(t)
+	fallback, err := NewFallbackPricer()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		id          int32
+		wantDisplay string
+		wantModel   string
+	}{
+		{1401, "Claude Opus 5.5 (Medium)", "claude-opus-5.5"},
+		{1402, "Claude Opus 5.5 (High)", "claude-opus-5.5"},
+		{1403, "Claude Sonnet 5.5 (Low)", "claude-sonnet-5.5"},
+		{1416, "Gemini 4 Argon (Low)", "gemini-4-argon"},
+		{1417, "Gemini 4 Argon (High)", "gemini-4-argon"},
+		{1418, "Gemini 4 Argon (Medium)", "gemini-4-argon"},
+	}
+
+	for _, tc := range cases {
+		name, ok := agyModelNames[tc.id]
+		if !ok {
+			t.Errorf("model ID %d not in agyModelNames", tc.id)
+			continue
+		}
+		if name != tc.wantDisplay {
+			t.Errorf("agyModelNames[%d] = %q, want %q", tc.id, name, tc.wantDisplay)
+		}
+		modelKey := Hyphenate(name)
+		if modelKey != tc.wantModel {
+			t.Errorf("Hyphenate(%q) = %q, want %q", name, modelKey, tc.wantModel)
+		}
+		if _, ok := p.Resolve(modelKey); !ok {
+			t.Errorf("%q does not resolve in testPricer", modelKey)
+		}
+		if _, ok := fallback.Resolve(modelKey); !ok {
+			t.Errorf("%q does not resolve in fallback pricer (missing from manual_pricing.json)", modelKey)
+		}
+	}
+}
+
+func TestStatSourceIncludesWAL(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	walPath := filepath.Join(dir, "test.db-wal")
+
+	if err := os.WriteFile(dbPath, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	size, mtime, err := StatSource(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != 5 {
+		t.Errorf("size = %d, want 5", size)
+	}
+
+	// Create WAL file with 10 bytes and later timestamp
+	if err := os.WriteFile(walPath, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	walTime := mtime.Add(5 * time.Second)
+	if err := os.Chtimes(walPath, walTime, walTime); err != nil {
+		t.Fatal(err)
+	}
+
+	size2, mtime2, err := StatSource(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size2 != 15 {
+		t.Errorf("size with WAL = %d, want 15 (5 + 10)", size2)
+	}
+	if !mtime2.Equal(walTime) {
+		t.Errorf("mtime with WAL = %v, want %v", mtime2, walTime)
+	}
 }

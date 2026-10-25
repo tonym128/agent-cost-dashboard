@@ -31,7 +31,7 @@ var sourceNote = map[string]string{
 	model.AgentClaude: "One directory per project, one JSONL file per session.",
 	model.AgentCodex:  "JSONL, sharded by date.",
 	model.AgentGemini: "JSONL under the agent's own directory.",
-	model.AgentAgy:    "SQLite rather than JSONL, so a missing file simply yields no rows.",
+	model.AgentAgy:    "SQLite conversations under ~/.gemini/antigravity or ~/.gemini/antigravity-cli.",
 	model.AgentOpencode: "One SQLite database holds every session, across both the " +
 		"1.x and the 2.x tables.",
 }

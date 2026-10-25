@@ -1427,3 +1427,131 @@ func TestScanReportsAFileThatFailsToIngest(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoverAltRoots(t *testing.T) {
+	primary := t.TempDir()
+	alt := t.TempDir()
+
+	writeJSONL(t, filepath.Join(primary, "a.jsonl"), `{"id":"a"}`)
+	writeJSONL(t, filepath.Join(alt, "b.jsonl"), `{"id":"b"}`)
+
+	paths, err := discover(Source{
+		Root:     primary,
+		AltRoots: []string{alt},
+		Ext:      ".jsonl",
+		Recurse:  false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("discovered %d files, want 2: %v", len(paths), paths)
+	}
+
+	// Also verify that if primary Root does not exist, AltRoots still discovers files
+	paths2, err := discover(Source{
+		Root:     filepath.Join(primary, "does-not-exist"),
+		AltRoots: []string{alt},
+		Ext:      ".jsonl",
+		Recurse:  false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths2) != 1 || filepath.Base(paths2[0]) != "b.jsonl" {
+		t.Fatalf("discovered %v, want only b.jsonl", paths2)
+	}
+}
+
+type mockRowIDParser struct {
+	calls []model.Call
+}
+
+func (m *mockRowIDParser) Agent() string              { return "mock" }
+func (m *mockRowIDParser) SessionUID(p string) string { return "mock-sess" }
+func (m *mockRowIDParser) Parse(path string, prev model.ScanState, pricer *source.Pricer) (model.SessionWrite, model.ScanState, error) {
+	// Monotonic row id cursor
+	next := model.ScanState{
+		Path:       path,
+		Agent:      "mock",
+		Cursor:     model.CursorRowID,
+		SessionUID: "mock-sess",
+		Offset:     int64(len(m.calls)),
+		Size:       100,
+	}
+	var newCalls []model.Call
+	for i := int(prev.Offset); i < len(m.calls); i++ {
+		newCalls = append(newCalls, m.calls[i])
+	}
+	sw := model.SessionWrite{
+		Session: model.Session{UID: "mock-sess", Agent: "mock", Project: "/p"},
+		Calls:   newCalls,
+	}
+	return sw, next, nil
+}
+
+func TestIncrementalScanRowIDAppendsWithoutPrefixHash(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "session.db")
+	if err := os.WriteFile(path, []byte("db"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newTestStore(t)
+	parser := &mockRowIDParser{
+		calls: []model.Call{
+			{SessionUID: "mock-sess", CallKey: "c1", Model: "m", Time: time.Now(), TotalTokens: 10, CostUSD: 1, Priced: true},
+		},
+	}
+	sc := New(Config{
+		Store:  st,
+		Pricer: nil,
+		Logger: testLogger(),
+		Sources: []Source{{
+			Agent: "mock", Root: root, Ext: ".db", Recurse: false,
+			parserFor: func() source.Parser { return parser },
+		}},
+	})
+	ctx := context.Background()
+
+	// Pass 1: 1 call ingested
+	if err := sc.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	totals, _ := st.Totals(ctx, store.Filter{})
+	if totals.Calls != 1 {
+		t.Fatalf("pass 1: %d calls, want 1", totals.Calls)
+	}
+
+	// Add second call and touch file
+	parser.calls = append(parser.calls, model.Call{
+		SessionUID: "mock-sess", CallKey: "c2", Model: "m", Time: time.Now(), TotalTokens: 20, CostUSD: 2, Priced: true,
+	})
+	_ = os.WriteFile(path, []byte("db-grew"), 0o600)
+
+	// Pass 2: incremental append must leave total calls = 2, NOT replace with only c2
+	if err := sc.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	totals2, _ := st.Totals(ctx, store.Filter{})
+	if totals2.Calls != 2 {
+		t.Fatalf("pass 2 after append: %d calls, want 2 (c1 + c2)", totals2.Calls)
+	}
+	calls, err := st.SessionCalls(ctx, "mock-sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("session has %d calls, want 2", len(calls))
+	}
+
+	// Pass 3: no new calls, touch file, must not wipe calls
+	_ = os.WriteFile(path, []byte("db-grew-again"), 0o600)
+	if err := sc.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	totals3, _ := st.Totals(ctx, store.Filter{})
+	if totals3.Calls != 2 {
+		t.Fatalf("pass 3 with no new calls: %d calls, want 2", totals3.Calls)
+	}
+}

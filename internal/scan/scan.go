@@ -32,6 +32,8 @@ type Source struct {
 	Agent string
 	// Root is the directory tree searched.
 	Root string
+	// AltRoots are additional directory trees searched for the same agent.
+	AltRoots []string
 	// Ext is the file extension to match, including the dot.
 	Ext string
 	// Recurse walks subdirectories. Set for agents that shard by project.
@@ -241,13 +243,13 @@ func (s *Scanner) scanSource(ctx context.Context, src Source, states map[string]
 		if st.Complete {
 			continue
 		}
-		info, err := os.Stat(path)
+		size, mtime, err := source.StatSource(path)
 		if err != nil {
 			continue
 		}
 		// The cheap gate: an unchanged size and mtime means an unchanged file.
-		// This is what makes a steady-state pass cost one stat per file.
-		if st.Offset > 0 && info.Size() == st.Size && info.ModTime().Equal(st.ModTime) {
+		// This is what makes a steady-state pass cost one stat per file (plus WAL if present).
+		if st.Offset > 0 && size == st.Size && mtime.Equal(st.ModTime) {
 			continue
 		}
 		if tally.changed >= maxChangedPerPass {
@@ -303,7 +305,8 @@ func (s *Scanner) ingest(path string, prev model.ScanState, parser source.Parser
 	// session would delete rows the fresh parse never re-read, because an
 	// incremental read returns only the increment. An idle pass would then
 	// quietly erase the session it was supposed to leave alone.
-	if prev.Offset > 0 && next.Offset == prev.Offset && sameHead(path, prev) {
+	same := prev.Cursor == model.CursorRowID || sameHead(path, prev)
+	if prev.Offset > 0 && next.Offset == prev.Offset && same {
 		// Still refresh the bookkeeping so the recorded size and mtime stay
 		// current; otherwise every future pass re-stats this file in full.
 		next.Scanned = s.cfg.Now()
@@ -313,7 +316,7 @@ func (s *Scanner) ingest(path string, prev model.ScanState, parser source.Parser
 		return 0, nil
 	}
 
-	incremental := next.Offset > prev.Offset && prev.Offset > 0 && sameHead(path, prev)
+	incremental := next.Offset > prev.Offset && prev.Offset > 0 && same
 	if incremental {
 		err = s.cfg.Store.AppendSession(sess)
 	} else {
@@ -438,45 +441,54 @@ func openCodeSessionIDs(dbPath string) ([]string, error) {
 
 // discover lists the source files for one agent.
 func discover(src Source) ([]string, error) {
-	if src.Root == "" {
-		return nil, nil
-	}
-	if _, err := os.Stat(src.Root); err != nil {
-		return nil, nil // not installed; not an error
-	}
+	roots := append([]string{src.Root}, src.AltRoots...)
 	skip := map[string]bool{}
 	for _, d := range src.SkipDirs {
 		skip[d] = true
 	}
 
 	var out []string
-	walk := func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // an unreadable subtree is skipped, not fatal
+	seen := map[string]bool{}
+
+	for _, root := range roots {
+		if root == "" {
+			continue
 		}
-		if d.IsDir() {
-			// The root's own name is exempt: these sources are rooted at
-			// dot-directories like ~/.gemini, and applying the hidden-directory
-			// rule to the root skips the entire tree.
-			if path == src.Root {
+		if _, err := os.Stat(root); err != nil {
+			continue // not installed; not an error
+		}
+
+		walk := func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil // an unreadable subtree is skipped, not fatal
+			}
+			if d.IsDir() {
+				// The root's own name is exempt: these sources are rooted at
+				// dot-directories like ~/.gemini, and applying the hidden-directory
+				// rule to the root skips the entire tree.
+				if path == root {
+					return nil
+				}
+				name := d.Name()
+				if strings.HasPrefix(name, ".") || skip[name] {
+					return filepath.SkipDir
+				}
+				if !src.Recurse {
+					return filepath.SkipDir
+				}
 				return nil
 			}
-			name := d.Name()
-			if strings.HasPrefix(name, ".") || skip[name] {
-				return filepath.SkipDir
-			}
-			if !src.Recurse {
-				return filepath.SkipDir
+			if strings.EqualFold(filepath.Ext(path), src.Ext) {
+				if !seen[path] {
+					seen[path] = true
+					out = append(out, path)
+				}
 			}
 			return nil
 		}
-		if strings.EqualFold(filepath.Ext(path), src.Ext) {
-			out = append(out, path)
+		if err := filepath.WalkDir(root, walk); err != nil {
+			return nil, err
 		}
-		return nil
-	}
-	if err := filepath.WalkDir(src.Root, walk); err != nil {
-		return nil, err
 	}
 	sort.Strings(out)
 	return out, nil
@@ -604,7 +616,10 @@ func DefaultSources(home string) ([]Source, string) {
 		},
 		{
 			Agent: model.AgentAgy, Root: root(model.AgentAgy),
-			Ext: ".db", Recurse: false, SkipDirs: defaultSkipDirs,
+			AltRoots:  []string{filepath.Join(home, ".gemini/antigravity-cli/conversations")},
+			Ext:       ".db",
+			Recurse:   false,
+			SkipDirs:  defaultSkipDirs,
 			parserFor: func() source.Parser { return source.NewAntigravityParser() },
 		},
 	}

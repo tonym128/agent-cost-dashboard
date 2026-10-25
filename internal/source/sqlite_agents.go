@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -90,6 +91,15 @@ var agyModelNames = map[int32]string{
 	1319: "Gemini 3.8 Flash (Medium)",
 	1320: "Gemini 3.1 Flash (Medium)",
 	1322: "Gemini 3.1 Flash (High)",
+	1400: "Claude Opus 5.5 (Low)",
+	1401: "Claude Opus 5.5 (Medium)",
+	1402: "Claude Opus 5.5 (High)",
+	1403: "Claude Sonnet 5.5 (Low)",
+	1404: "Claude Sonnet 5.5 (Medium)",
+	1405: "Claude Sonnet 5.5 (High)",
+	1416: "Gemini 4 Argon (Low)",
+	1417: "Gemini 4 Argon (High)",
+	1418: "Gemini 4 Argon (Medium)",
 }
 
 func NewAntigravityParser() Parser { return &AntigravityParser{} }
@@ -100,15 +110,40 @@ func (p *AntigravityParser) Agent() string { return model.AgentAgy }
 // database after the conversation.
 func (p *AntigravityParser) SessionUID(path string) string { return stem(path) }
 
+// StatSource returns the file size and latest modification time for path.
+// If a SQLite write-ahead log (path + "-wal") exists, its size is added to the
+// database size and its modification time is considered, ensuring active
+// transactions in WAL mode are detected by scanners.
+func StatSource(path string) (int64, time.Time, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	size := st.Size()
+	mtime := st.ModTime()
+	if wal, err := os.Stat(path + "-wal"); err == nil {
+		size += wal.Size()
+		if wal.ModTime().After(mtime) {
+			mtime = wal.ModTime()
+		}
+	}
+	return size, mtime, nil
+}
+
 func (p *AntigravityParser) Parse(path string, prev model.ScanState, pricer *Pricer) (model.SessionWrite, model.ScanState, error) {
 	uid := stem(path)
+	size, mtime, err := StatSource(path)
+	if err != nil {
+		size = fileSize(path)
+		mtime = modTime(path)
+	}
 	next := model.ScanState{
 		Path: path, Agent: model.AgentAgy, Cursor: model.CursorRowID,
-		SessionUID: uid, ModTime: modTime(path), Offset: prev.Offset,
+		SessionUID: uid, ModTime: mtime, Offset: prev.Offset,
 		// Size is half of the scanner's "has this changed" check. Left at zero
 		// the conversation looks changed on every pass and its steps are
 		// re-decoded every time.
-		Size: fileSize(path),
+		Size: size,
 	}
 
 	db, err := openReadOnly(path)
