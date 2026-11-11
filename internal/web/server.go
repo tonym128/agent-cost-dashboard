@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
 	"github.com/tonym128/agent-cost-dashboard/internal/store"
 )
 
@@ -269,10 +270,12 @@ func (s *Server) buildPayload(ctx context.Context, filter store.Filter, query ur
 
 	// The headline figures sit at the top level rather than under a key: they are
 	// what the stat cards read, and there is one set of them per page.
+	provStats := model.RollupProviders(models, totals.Cost)
 	payload := map[string]any{
 		"generatedEpoch": s.Generated().Unix(),
 		"dailyStats":     dailyJSON(daily),
 		"models":         modelsJSON(models, totals.Cost),
+		"providers":      providersJSON(provStats),
 		"projects":       projectsJSON(projects, sessions, projectModels, projectTools),
 		"tools":          toolsJSON(tools, totals.ToolSeconds),
 		"unpricedCalls":  totals.UnpricedCalls,

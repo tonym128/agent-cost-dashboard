@@ -62,6 +62,23 @@ var columnLayout = []tableSpec{
 		},
 	},
 	{
+		table: "providers-table", tbody: "providers-tbody", renderer: "renderProviders",
+		columns: "PROVIDERS_COLUMNS", payload: "providers",
+		cols: []column{
+			{"Provider", "name", "PROVIDERNAME"},
+			{"Messages", "messages", "401"},
+			{"Total Tokens", "tokens", "402"},
+			{"Input", "input_tokens", "403"},
+			{"Output", "output_tokens", "404"},
+			{"Cache Read", "cache_read_tokens", "405"},
+			{"Cache Write", "cache_write_tokens", "406"},
+			{"Reasoning", "reasoning_tokens", "407"},
+			{"Tokens/s", "avg_tps", "40.5"},
+			{"Cost", "cost", "$4.04"},
+			{"Share", "pct", "44.4%"},
+		},
+	},
+	{
 		table: "models-table", tbody: "models-tbody", renderer: "renderModels",
 		columns: "MODELS_COLUMNS", payload: "models",
 		cols: []column{
@@ -153,6 +170,12 @@ func sentinelPayload() map[string]any {
 				"messages": 901, "tokens": 902, "cost": 9.09,
 			}},
 		}},
+		"providers": []any{map[string]any{
+			"name": "PROVIDERNAME", "messages": 401, "tokens": 402,
+			"input_tokens": 403, "output_tokens": 404,
+			"cache_read_tokens": 405, "cache_write_tokens": 406,
+			"reasoning_tokens": 407, "avg_tps": 40.5, "cost": 4.04, "pct": 44.4,
+		}},
 		"models": []any{map[string]any{
 			"name": "MODELNAME", "messages": 501, "tokens": 502,
 			"input_tokens": 503, "output_tokens": 504,
@@ -198,11 +221,13 @@ const renderAllBody = `async function () {
     };
     renderProjects();
     renderSessions();
+    renderProviders();
     renderModels();
     renderTools();
     return {
         projects: read('projects-tbody'),
         sessions: read('sessions-tbody'),
+        providers: read('providers-tbody'),
         models: read('models-tbody'),
         tools: read('tools-tbody'),
         activity: read('activity-tbody'),
@@ -410,6 +435,8 @@ func (s tableSpec) payloadKey() string {
 	switch s.table {
 	case "sessions-table":
 		return "sessions"
+	case "providers-table":
+		return "providers"
 	case "models-table":
 		return "models"
 	case "tools-table":
@@ -561,16 +588,19 @@ func TestEveryEmptyTableSaysWhyItIsEmpty(t *testing.T) {
         const empty = {dailyStats: [], projects: [], models: [], tools: []};
         // The script's own bindings are the only way to empty them: the renderers
         // read these arrays directly rather than window.dashboardData.
+        providers.length = 0;
         projects.length = 0;
         models.length = 0;
         tools.length = 0;
         renderProjects();
         renderSessions();
+        renderProviders();
         renderModels();
         renderTools();
         return {
             projects: read('projects-tbody'),
             sessions: read('sessions-tbody'),
+            providers: read('providers-tbody'),
             models: read('models-tbody'),
             tools: read('tools-tbody'),
             activity: read('activity-tbody'),
@@ -583,7 +613,7 @@ func TestEveryEmptyTableSaysWhyItIsEmpty(t *testing.T) {
 		Ids: templateIDs(t),
 		Data: map[string]any{
 			"dailyStats": []any{}, "projects": []any{},
-			"models": []any{}, "tools": []any{},
+			"providers": []any{}, "models": []any{}, "tools": []any{},
 		},
 		Activity: map[string]any{"buckets": []any{}, "oldest": 0},
 	}, body, &got)
@@ -601,7 +631,7 @@ func TestEveryEmptyTableSaysWhyItIsEmpty(t *testing.T) {
 	}
 	// The activity table is filled from /api/activity, and an all-empty response
 	// is the case a user with no calls in the window hits.
-	assertEmptyRow(t, "activity-table", got["activity"], len(columnLayout[4].cols))
+	assertEmptyRow(t, "activity-table", got["activity"], len(columnLayout[len(columnLayout)-1].cols))
 	if chart := got["chart"]; !strings.Contains(chart, "No spending recorded yet") {
 		t.Errorf("the daily chart rendered %q when there was no data at all; a blank "+
 			"space is not a message", chart)

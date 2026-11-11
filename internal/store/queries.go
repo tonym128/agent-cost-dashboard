@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
 )
 
 // Filter is the set of axes the dashboard can narrow by. Empty means no filter.
@@ -427,21 +429,7 @@ func (s *Store) Activity(ctx context.Context, f Filter, from, to time.Time, step
 }
 
 // ModelStat is one model's totals.
-type ModelStat struct {
-	Model            string
-	Cost             float64
-	Calls            int
-	TotalTokens      int64
-	InputTokens      int64
-	OutputTokens     int64
-	CacheReadTokens  int64
-	CacheWriteTokens int64
-	ReasoningTokens  int64
-	LLMSeconds       float64
-	FirstTS          int64
-	LastTS           int64
-	Unpriced         int
-}
+type ModelStat = model.ModelStat
 
 // modelsSQL assembles the per-model rollup behind the models table.
 func modelsSQL(where string) string {

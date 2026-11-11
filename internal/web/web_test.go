@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -128,6 +129,27 @@ func TestUnpricedCallsAreReportedNotHidden(t *testing.T) {
 	body := get(t, srv, "/").Body.String()
 	if !strings.Contains(body, "Unpriced Calls") {
 		t.Error("page does not surface unpriced calls")
+	}
+}
+
+func TestProviderBreakdownInPayload(t *testing.T) {
+	srv, st := newTestServer(t)
+	seed(t, st, time.Now())
+
+	payload := dashboardPayload(t, get(t, srv, "/").Body.String())
+	providers, ok := payload["providers"].([]any)
+	if !ok || len(providers) == 0 {
+		t.Fatalf("payload missing providers: %v", payload["providers"])
+	}
+
+	names := []string{}
+	for _, p := range providers {
+		row := p.(map[string]any)
+		names = append(names, row["name"].(string))
+	}
+	want := []string{"Anthropic", "Google", "Other"}
+	if !slices.Equal(names, want) {
+		t.Errorf("providers = %v, want %v", names, want)
 	}
 }
 

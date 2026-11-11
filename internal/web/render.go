@@ -5,6 +5,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
 	"github.com/tonym128/agent-cost-dashboard/internal/store"
 )
 
@@ -102,6 +103,33 @@ func modelsJSON(models []store.ModelStat, totalCost float64) []map[string]any {
 			"last_ts":            m.LastTS,
 			"unpriced":           m.Unpriced,
 			"pct":                pct,
+		})
+	}
+	return out
+}
+
+func providersJSON(providers []model.ProviderStat) []map[string]any {
+	out := make([]map[string]any, 0, len(providers))
+	for _, p := range providers {
+		out = append(out, map[string]any{
+			"name":               p.Name,
+			"provider":           p.Name,
+			"tokens":             p.TotalTokens,
+			"cost":               p.Cost,
+			"messages":           p.Calls,
+			"total_tokens":       p.TotalTokens,
+			"input_tokens":       p.InputTokens,
+			"output_tokens":      p.OutputTokens,
+			"cache_read_tokens":  p.CacheReadTokens,
+			"cache_write_tokens": p.CacheWriteTokens,
+			"reasoning_tokens":   p.ReasoningTokens,
+			"llm_time":           p.LLMSeconds,
+			"avg_tps":            p.AvgTPS,
+			"first_ts":           p.FirstTS,
+			"last_ts":            p.LastTS,
+			"unpriced":           p.Unpriced,
+			"pct":                p.Pct,
+			"models":             p.Models,
 		})
 	}
 	return out

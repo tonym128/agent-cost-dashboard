@@ -249,6 +249,61 @@ tr:hover {
     color: var(--accent-blue);
 }
 
+.provider-google {
+    background: rgba(88, 166, 255, 0.2);
+    color: var(--accent-blue);
+}
+
+.provider-anthropic {
+    background: rgba(167, 113, 247, 0.2);
+    color: var(--accent-purple);
+}
+
+.provider-openai {
+    background: rgba(63, 185, 80, 0.2);
+    color: var(--accent-green);
+}
+
+.provider-meta {
+    background: rgba(121, 192, 255, 0.2);
+    color: #79c0ff;
+}
+
+.provider-deepseek {
+    background: rgba(165, 192, 255, 0.2);
+    color: #a5c0ff;
+}
+
+.provider-mistral {
+    background: rgba(255, 166, 87, 0.2);
+    color: var(--accent-orange);
+}
+
+.provider-qwen {
+    background: rgba(188, 140, 255, 0.2);
+    color: #bc8cff;
+}
+
+.provider-nvidia {
+    background: rgba(86, 211, 100, 0.2);
+    color: #56d364;
+}
+
+.provider-xai {
+    background: rgba(225, 228, 232, 0.2);
+    color: #e1e4e8;
+}
+
+.provider-cohere {
+    background: rgba(227, 179, 65, 0.2);
+    color: var(--accent-yellow);
+}
+
+.provider-other {
+    background: rgba(140, 149, 159, 0.2);
+    color: var(--text-secondary);
+}
+
 .bar-container {
     width: 100%;
     height: 8px;

@@ -225,6 +225,28 @@
   </div>
 
   <div class="section">
+    <div class="section-header"><span>Model Providers</span></div>
+    <table id="providers-table">
+      <thead>
+        <tr>
+          <th data-sort="name">Provider <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="messages">Messages <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="tokens">Total Tokens <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="input_tokens">Input <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="output_tokens">Output <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="cache_read_tokens">Cache Read <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="cache_write_tokens">Cache Write <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="reasoning_tokens">Reasoning <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="avg_tps">Tokens/s <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="cost">Cost <span class="sort-icon">▼</span></th>
+          <th class="numeric" data-sort="pct">Share <span class="sort-icon">▼</span></th>
+        </tr>
+      </thead>
+      <tbody id="providers-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="section">
     <div class="section-header"><span>Models</span></div>
     <table id="models-table">
       <thead>

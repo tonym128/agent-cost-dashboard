@@ -291,6 +291,7 @@ let sessionsPage = 0;
 // renderer emits are asserted against these by the Go test, so the two cannot
 // drift apart again.
 const SESSIONS_COLUMNS = 10;
+const PROVIDERS_COLUMNS = 11;
 const MODELS_COLUMNS = 11;
 const TOOLS_COLUMNS = 6;
 const PROJECTS_COLUMNS = 9;
@@ -748,9 +749,59 @@ function updateSortIcons(tableId, sortState) {
     });
 }
 
+// ── Providers table sorting ───────────────────────────────────────────
+const providers = dashboardData.providers || [];
+let providerSort = { field: 'cost', asc: false };
+
+function renderProviders() {
+    const tbody = document.getElementById('providers-tbody');
+    if (!tbody) return;
+    const sorted = sortData(providers, providerSort);
+    if (!sorted.length) {
+        tbody.innerHTML = emptyRow(PROVIDERS_COLUMNS, 'No provider calls in this view.');
+        return;
+    }
+
+    tbody.innerHTML = sorted.map(p => {
+        const provClass = 'provider-' + p.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const breakdown = tokenTitle(p);
+        const modelsList = (p.models && p.models.length > 0)
+            ? 'Models: ' + p.models.join(', ')
+            : p.name;
+
+        return `
+            <tr>
+                <td><span class="model-tag ${escapeHtml(provClass)}" title="${escapeHtml(modelsList)}">${escapeHtml(p.name)}</span></td>
+                <td title="${formatFullNumber(p.messages)}">${formatCompactNumber(p.messages)}</td>
+                <td class="tokens" title="${escapeHtml(breakdown)}">${formatCompactNumber(p.tokens)}</td>
+                <td class="tokens" title="${formatFullNumber(p.input_tokens)}">${formatCompactNumber(p.input_tokens)}</td>
+                <td class="tokens" title="${formatFullNumber(p.output_tokens)}">${formatCompactNumber(p.output_tokens)}</td>
+                <td class="tokens" title="${formatFullNumber(p.cache_read_tokens)}">${formatCompactNumber(p.cache_read_tokens)}</td>
+                <td class="tokens" title="${formatFullNumber(p.cache_write_tokens)}">${formatCompactNumber(p.cache_write_tokens)}</td>
+                <td class="tokens" title="${formatFullNumber(p.reasoning_tokens)}">${formatCompactNumber(p.reasoning_tokens)}</td>
+                <td style="color: var(--accent-blue)">${(p.avg_tps || 0).toFixed(1)}</td>
+                <td class="cost">$${p.cost.toFixed(2)}</td>
+                <td>
+                    <div class="bar-container" style="width: 100px; display: inline-block; vertical-align: middle;">
+                        <div class="bar" style="width: ${p.pct}%"></div>
+                    </div>
+                    ${p.pct.toFixed(1)}%
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
 // ── Models table sorting ──────────────────────────────────────────────
 const models = dashboardData.models || [];
 let modelSort = { field: 'cost', asc: false };
+
+const modelToProvider = {};
+(dashboardData.providers || []).forEach(p => {
+    (p.models || []).forEach(m => {
+        modelToProvider[m] = p.name;
+    });
+});
 
 function renderModels() {
     const tbody = document.getElementById('models-tbody');
@@ -762,6 +813,8 @@ function renderModels() {
     }
 
     tbody.innerHTML = sorted.map(m => {
+        const prov = modelToProvider[m.name] || 'Other';
+        const provClass = 'provider-' + prov.toLowerCase().replace(/[^a-z0-9]/g, '');
         const modelClass = m.name.toLowerCase().includes('claude') ? 'model-claude' : 'model-other';
         // The tooltip lists every token column the row carries, which is what
         // the breakdown columns exist for: a total alone says nothing about
@@ -770,7 +823,7 @@ function renderModels() {
 
         return `
             <tr>
-                <td><span class="model-tag ${modelClass}">${escapeHtml(m.name)}</span></td>
+                <td><span class="model-tag ${modelClass} ${escapeHtml(provClass)}" title="Provider: ${escapeHtml(prov)}">${escapeHtml(m.name)}</span></td>
                 <td title="${formatFullNumber(m.messages)}">${formatCompactNumber(m.messages)}</td>
                 <td class="tokens" title="${escapeHtml(breakdown)}">${formatCompactNumber(m.tokens)}</td>
                 <td class="tokens" title="${formatFullNumber(m.input_tokens)}">${formatCompactNumber(m.input_tokens)}</td>
@@ -837,16 +890,19 @@ setupDelegatedActions();
 setupSessionsToolbar();
 setupSorting('projects-table', projectSort, renderProjects);
 setupSorting('sessions-table', sessionsSort, renderSessions);
+setupSorting('providers-table', providerSort, renderProviders);
 setupSorting('models-table', modelSort, renderModels);
 setupSorting('tools-table', toolSort, renderTools);
 
 // Initial render
 renderProjects();
 renderSessions();
+renderProviders();
 renderModels();
 renderTools();
 updateSortIcons('projects-table', projectSort);
 updateSortIcons('sessions-table', sessionsSort);
+updateSortIcons('providers-table', providerSort);
 updateSortIcons('models-table', modelSort);
 updateSortIcons('tools-table', toolSort);
 

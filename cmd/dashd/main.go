@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tonym128/agent-cost-dashboard/internal/model"
 	"github.com/tonym128/agent-cost-dashboard/internal/scan"
 	"github.com/tonym128/agent-cost-dashboard/internal/source"
 	"github.com/tonym128/agent-cost-dashboard/internal/store"
@@ -335,6 +336,17 @@ func printStats(st *store.Store, out io.Writer) error {
 		oldest, newest, _ := st.HistoryRange(ctx, store.Filter{})
 		fmt.Fprintf(out, "history    %s to %s\n",
 			oldest.Local().Format("2006-01-02"), newest.Local().Format("2006-01-02"))
+	}
+	models, err := st.Models(ctx, store.Filter{})
+	if err == nil && len(models) > 0 {
+		providers := model.RollupProviders(models, totals.Cost)
+		if len(providers) > 0 {
+			fmt.Fprintln(out, "\nproviders:")
+			for _, p := range providers {
+				fmt.Fprintf(out, "  %-12s $%10.2f (%5.1f%%)  %7d calls\n",
+					p.Name, p.Cost, p.Pct, p.Calls)
+			}
+		}
 	}
 	fmt.Fprintln(out)
 	for _, s := range statuses {
